@@ -1,0 +1,692 @@
+#![allow(clippy::missing_safety_doc, clippy::not_unsafe_ptr_arg_deref)]
+//! CUDA Graph API wrappers for explicit graph construction and surgical updates.
+
+use std::ffi::c_void;
+use std::mem::MaybeUninit;
+use std::sync::Arc;
+
+use rocmrc::{
+    HipResult,
+    driver::{
+        HipContext, HipFunction, HipStream, DriverError,
+        sys::{self, hipEvent_t, hipFunction_t, hipGraph_t, hipGraphExec_t, hipGraphNode_t},
+    },
+};
+
+/// A CUDA graph that can be modified and instantiated.
+pub struct CudaGraphHandle {
+    pub(crate) cu_graph: hipGraph_t,
+    pub(crate) ctx: Arc<HipContext>,
+}
+
+impl CudaGraphHandle {
+    /// Creates a new empty CUDA graph.
+    pub fn new(ctx: Arc<HipContext>) -> Result<Self, DriverError> {
+        ctx.bind_to_thread()?;
+        let mut graph = MaybeUninit::uninit();
+        unsafe {
+            sys::hipGraphCreate(graph.as_mut_ptr(), 0).result()?;
+            Ok(Self {
+                cu_graph: graph.assume_init(),
+                ctx,
+            })
+        }
+    }
+
+    /// Adds a kernel node to the graph. kernel_params must remain valid for graph lifetime.
+    pub unsafe fn add_kernel_node(
+        &mut self,
+        dependencies: &[hipGraphNode_t],
+        func: hipFunction_t,
+        grid_dim: (u32, u32, u32),
+        block_dim: (u32, u32, u32),
+        shared_mem_bytes: u32,
+        kernel_params: *mut *mut c_void,
+    ) -> Result<hipGraphNode_t, DriverError> {
+        let params = sys::hipKernelNodeParams {
+            // hipKernelNodeParams.func is `*mut c_void` (not hipFunction_t
+            // directly) — pass the raw module-function handle as a void*.
+            func: func as *mut c_void,
+            gridDim: sys::dim3 { x: grid_dim.0, y: grid_dim.1, z: grid_dim.2 },
+            blockDim: sys::dim3 { x: block_dim.0, y: block_dim.1, z: block_dim.2 },
+            sharedMemBytes: shared_mem_bytes,
+            kernelParams: kernel_params,
+            extra: std::ptr::null_mut(),
+        };
+
+        let mut node = MaybeUninit::uninit();
+        unsafe {
+            sys::hipGraphAddKernelNode(
+                node.as_mut_ptr(),
+                self.cu_graph,
+                dependencies.as_ptr(),
+                dependencies.len(),
+                &params,
+            )
+            .result()?;
+            Ok(node.assume_init())
+        }
+    }
+
+    /// Adds an event record node to the graph for timing.
+    pub fn add_event_record_node(
+        &mut self,
+        dependencies: &[hipGraphNode_t],
+        event: hipEvent_t,
+    ) -> Result<hipGraphNode_t, DriverError> {
+        let mut node = MaybeUninit::uninit();
+        unsafe {
+            sys::hipGraphAddEventRecordNode(
+                node.as_mut_ptr(),
+                self.cu_graph,
+                dependencies.as_ptr(),
+                dependencies.len(),
+                event,
+            )
+            .result()?;
+            Ok(node.assume_init())
+        }
+    }
+
+    /// Instantiates the graph, creating an executable graph.
+    pub fn instantiate(&self) -> Result<CudaGraphExecHandle, DriverError> {
+        self.ctx.bind_to_thread()?;
+        let mut graph_exec = MaybeUninit::uninit();
+        unsafe {
+            sys::hipGraphInstantiateWithFlags(graph_exec.as_mut_ptr(), self.cu_graph, 0).result()?;
+            Ok(CudaGraphExecHandle {
+                cu_graph_exec: graph_exec.assume_init(),
+                ctx: self.ctx.clone(),
+            })
+        }
+    }
+}
+
+impl Drop for CudaGraphHandle {
+    fn drop(&mut self) {
+        let _ = self.ctx.bind_to_thread();
+        if !self.cu_graph.is_null() {
+            unsafe {
+                let _ = sys::hipGraphDestroy(self.cu_graph);
+            }
+        }
+    }
+}
+
+/// An instantiated CUDA graph that can be launched and updated.
+pub struct CudaGraphExecHandle {
+    pub(crate) cu_graph_exec: hipGraphExec_t,
+    pub(crate) ctx: Arc<HipContext>,
+}
+
+impl CudaGraphExecHandle {
+    /// Launches the graph on the given stream.
+    pub fn launch(&self, stream: &HipStream) -> Result<(), DriverError> {
+        self.ctx.bind_to_thread()?;
+        unsafe { sys::hipGraphLaunch(self.cu_graph_exec, stream.hip_stream()).result() }
+    }
+
+    /// Surgically updates a kernel node's parameters without rebuilding the graph.
+    pub unsafe fn update_kernel_node(
+        &mut self,
+        node: hipGraphNode_t,
+        func: hipFunction_t,
+        grid_dim: (u32, u32, u32),
+        block_dim: (u32, u32, u32),
+        shared_mem_bytes: u32,
+        kernel_params: *mut *mut c_void,
+    ) -> Result<(), DriverError> {
+        let params = sys::hipKernelNodeParams {
+            func: func as *mut c_void,
+            gridDim: sys::dim3 { x: grid_dim.0, y: grid_dim.1, z: grid_dim.2 },
+            blockDim: sys::dim3 { x: block_dim.0, y: block_dim.1, z: block_dim.2 },
+            sharedMemBytes: shared_mem_bytes,
+            kernelParams: kernel_params,
+            extra: std::ptr::null_mut(),
+        };
+
+        unsafe { sys::hipGraphExecKernelNodeSetParams(self.cu_graph_exec, node, &params) }
+            .result()
+    }
+}
+
+impl Drop for CudaGraphExecHandle {
+    fn drop(&mut self) {
+        let _ = self.ctx.bind_to_thread();
+        if !self.cu_graph_exec.is_null() {
+            unsafe {
+                let _ = sys::hipGraphExecDestroy(self.cu_graph_exec);
+            }
+        }
+    }
+}
+
+/// Extension trait to get the raw hipFunction_t handle from HipFunction.
+/// Compatibility shim: the cuda_lite original poked at `CudaFunction`'s
+/// private offset to extract the raw `CUfunction`. rocmrc exposes the raw
+/// `hipFunction_t` directly via `HipFunction::raw()`, so this just forwards.
+/// Kept as a trait so existing call sites (`func.raw_function()`) compile.
+pub trait HipFunctionExt {
+    fn raw_function(&self) -> hipFunction_t;
+}
+
+impl HipFunctionExt for HipFunction {
+    fn raw_function(&self) -> hipFunction_t {
+        self.raw()
+    }
+}
+
+/// Stored kernel parameters that persist for the lifetime of a CUDA graph.
+#[derive(Debug)]
+pub struct KernelParams {
+    values: Box<[u64]>,
+    ptrs: Box<[*mut c_void]>,
+    /// Index of the dyn_dims pointer in values array (if present)
+    dyn_dims_idx: Option<usize>,
+}
+
+impl KernelParams {
+    pub fn new(output_ptr: u64, input_ptrs: &[u64]) -> Self {
+        let mut values: Vec<u64> = Vec::with_capacity(1 + input_ptrs.len());
+        values.push(output_ptr);
+        values.extend_from_slice(input_ptrs);
+        let values = values.into_boxed_slice();
+        let ptrs: Vec<*mut c_void> = values
+            .iter()
+            .map(|v| v as *const u64 as *mut c_void)
+            .collect();
+        Self {
+            values,
+            ptrs: ptrs.into_boxed_slice(),
+            dyn_dims_idx: None,
+        }
+    }
+
+    /// Create kernel params with a dyn_dims pointer as the last parameter.
+    pub fn with_dyn_dims(output_ptr: u64, input_ptrs: &[u64], dyn_dims_ptr: u64) -> Self {
+        let mut values: Vec<u64> = Vec::with_capacity(2 + input_ptrs.len());
+        values.push(output_ptr);
+        values.extend_from_slice(input_ptrs);
+        let dyn_dims_idx = values.len();
+        values.push(dyn_dims_ptr);
+        let values = values.into_boxed_slice();
+        let ptrs: Vec<*mut c_void> = values
+            .iter()
+            .map(|v| v as *const u64 as *mut c_void)
+            .collect();
+        Self {
+            values,
+            ptrs: ptrs.into_boxed_slice(),
+            dyn_dims_idx: Some(dyn_dims_idx),
+        }
+    }
+
+    pub fn as_cuda_params(&mut self) -> *mut *mut c_void {
+        self.ptrs.as_mut_ptr()
+    }
+
+    pub fn update_output(&mut self, ptr: u64) {
+        self.values[0] = ptr;
+    }
+
+    pub fn update_input(&mut self, index: usize, ptr: u64) {
+        self.values[1 + index] = ptr;
+    }
+
+    /// Update the dyn_dims pointer if this kernel uses one.
+    pub fn update_dyn_dims(&mut self, ptr: u64) {
+        if let Some(idx) = self.dyn_dims_idx {
+            self.values[idx] = ptr;
+        }
+    }
+}
+
+/// Stored kernel parameters for megakernels that persist for the lifetime of a CUDA graph.
+/// Params: tasks, head, ready, queue_lock, timings, start_times, buffers, dyn_dims
+#[derive(Debug)]
+pub struct MegakernelParams {
+    /// Parameter values: [tasks, head, ready, queue_lock, timings, start_times, buffers, dyn_dims]
+    values: Box<[u64]>,
+    /// Pointer array for CUDA kernel launch
+    ptrs: Box<[*mut c_void]>,
+}
+
+impl MegakernelParams {
+    /// Create megakernel params with all internal buffer pointers and dyn_dims.
+    /// Order: tasks, head, ready, queue_lock, timings, start_times, buffers, dyn_dims
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        tasks_ptr: u64,
+        head_ptr: u64,
+        ready_ptr: u64,
+        queue_lock_ptr: u64,
+        timings_ptr: u64,
+        start_times_ptr: u64,
+        buffers_ptr: u64,
+        dyn_dims_ptr: u64,
+    ) -> Self {
+        let values: Box<[u64]> = vec![
+            tasks_ptr,
+            head_ptr,
+            ready_ptr,
+            queue_lock_ptr,
+            timings_ptr,
+            start_times_ptr,
+            buffers_ptr,
+            dyn_dims_ptr,
+        ]
+        .into_boxed_slice();
+        let ptrs: Box<[*mut c_void]> = values
+            .iter()
+            .map(|v| v as *const u64 as *mut c_void)
+            .collect();
+        Self { values, ptrs }
+    }
+
+    pub fn as_cuda_params(&mut self) -> *mut *mut c_void {
+        // Rebuild pointers (in case struct was moved)
+        for (i, v) in self.values.iter().enumerate() {
+            self.ptrs[i] = v as *const u64 as *mut c_void;
+        }
+        self.ptrs.as_mut_ptr()
+    }
+
+    /// Update the buffers pointer (index 6).
+    pub fn update_buffers(&mut self, ptr: u64) {
+        self.values[6] = ptr;
+    }
+
+    /// Update the dyn_dims pointer (index 7).
+    pub fn update_dyn_dims(&mut self, ptr: u64) {
+        self.values[7] = ptr;
+    }
+
+    /// Get the current buffers pointer value.
+    pub fn buffers_ptr(&self) -> u64 {
+        self.values[6]
+    }
+}
+
+/// Timing data for a single kernel in a CUDA graph.
+#[derive(Clone, Debug)]
+pub struct CudaGraphKernelTiming {
+    pub kernel_name: &'static str,
+    pub start_ns: u64,
+    pub end_ns: u64,
+}
+
+/// Timing data for a CUDA graph execution.
+#[derive(Clone, Debug)]
+pub struct CudaGraphTiming {
+    pub kernel_timings: Vec<CudaGraphKernelTiming>,
+    /// Time from launch call until first kernel started on GPU
+    pub launch_latency_ns: u64,
+    /// Elapsed time (in nanoseconds) from span entry to just before graph launch.
+    /// This captures the setup overhead (constants, buffers, graph building) that
+    /// occurs before the GPU actually starts executing.
+    pub setup_duration_ns: u64,
+}
+
+pub fn create_cuda_event(ctx: &Arc<HipContext>) -> Result<hipEvent_t, DriverError> {
+    ctx.bind_to_thread()?;
+    let mut event = MaybeUninit::uninit();
+    unsafe {
+        // HIP exposes hipEvent flags as a c_uint bit field rather than an
+        // enum; bindgen drops the `#define`s. 0 = hipEventDefault.
+        sys::hipEventCreateWithFlags(event.as_mut_ptr(), 0u32).result()?;
+        Ok(event.assume_init())
+    }
+}
+
+pub fn destroy_cuda_event(ctx: &Arc<HipContext>, event: hipEvent_t) {
+    if !event.is_null() {
+        let _ = ctx.bind_to_thread();
+        unsafe {
+            let _ = sys::hipEventDestroy(event);
+        }
+    }
+}
+
+pub fn event_elapsed_ms(
+    ctx: &Arc<HipContext>,
+    start: hipEvent_t,
+    end: hipEvent_t,
+) -> Result<f32, DriverError> {
+    ctx.bind_to_thread()?;
+    let mut ms: f32 = 0.0;
+    unsafe {
+        sys::hipEventElapsedTime(&mut ms, start, end).result()?;
+    }
+    Ok(ms)
+}
+
+pub fn record_event_on_stream(
+    ctx: &Arc<HipContext>,
+    event: hipEvent_t,
+    stream: &HipStream,
+) -> Result<(), DriverError> {
+    ctx.bind_to_thread()?;
+    unsafe {
+        sys::hipEventRecord(event, stream.hip_stream()).result()?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use candle_core::{Device, Tensor};
+    use cudarc::driver::HipContext;
+    use luminal::prelude::*;
+    use proptest::prelude::*;
+    use rand::{Rng, SeedableRng, rngs::StdRng};
+    use std::sync::Arc;
+
+    use crate::rocm_bandwidth_gbps;
+    use crate::runtime::RocmRuntime;
+    use crate::tests::utilities::*;
+
+    #[test]
+    fn test_create_empty_graph() {
+        let Ok(ctx) = HipContext::new(0) else { return };
+        assert!(CudaGraphHandle::new(ctx).is_ok());
+    }
+
+    #[test]
+    fn test_kernel_params() {
+        let mut params = KernelParams::new(0x1000, &[0x2000, 0x3000]);
+        assert!(!params.as_cuda_params().is_null());
+        params.update_output(0x4000);
+        params.update_input(0, 0x5000);
+    }
+
+    #[test]
+    fn test_cuda_function_size() {
+        assert_eq!(
+            std::mem::size_of::<HipFunction>(),
+            std::mem::size_of::<hipFunction_t>() + std::mem::size_of::<usize>()
+        );
+    }
+
+    #[test]
+    fn test_raw_function_extraction() {
+        let Ok(ctx) = HipContext::new(0) else { return };
+        let kernel_src = r#"extern "C" __global__ void test_kernel(float* out) { out[0] = 1.0f; }"#;
+        let Ok(ptx) = crate::compile_module_image_for_current_device(&ctx, kernel_src) else {
+            return;
+        };
+        let module = ctx.load_module(ptx).unwrap();
+        let func = module.load_function("test_kernel").unwrap();
+        let cu_func = unsafe { func.raw_function() };
+        assert!(!cu_func.is_null());
+        let mut max_threads: i32 = 0;
+        let result = unsafe {
+            sys::hipFuncGetAttribute(
+                &mut max_threads,
+                sys::hipFunction_attribute::HIP_FUNC_ATTRIBUTE_MAX_THREADS_PER_BLOCK,
+                cu_func,
+            )
+        };
+        assert!(result == sys::cudaError_enum::CUDA_SUCCESS);
+    }
+
+    #[test]
+    fn test_graph_with_kernel() {
+        use cudarc::driver::{CudaSlice, DevicePtr};
+        let Ok(ctx) = HipContext::new(0) else { return };
+        let kernel_src = r#"extern "C" __global__ void test_kernel(float* out, float* in1) { if (threadIdx.x == 0) out[0] = in1[0] + 1.0f; }"#;
+        let Ok(ptx) = crate::compile_module_image_for_current_device(&ctx, kernel_src) else {
+            return;
+        };
+        let module = ctx.load_module(ptx).unwrap();
+        let func = module.load_function("test_kernel").unwrap();
+        let stream = ctx.default_stream();
+        let output: CudaSlice<f32> = unsafe { stream.alloc(1) }.unwrap();
+        let mut input: CudaSlice<f32> = unsafe { stream.alloc(1) }.unwrap();
+        stream.memcpy_htod(&[5.0f32], &mut input).unwrap();
+        let cu_func = unsafe { func.raw_function() };
+        let mut graph = CudaGraphHandle::new(ctx.clone()).unwrap();
+        let mut params =
+            KernelParams::new(output.device_ptr(&stream).0, &[input.device_ptr(&stream).0]);
+        let _node = unsafe {
+            graph.add_kernel_node(
+                &[],
+                cu_func,
+                (1, 1, 1),
+                (1, 1, 1),
+                0,
+                params.as_cuda_params(),
+            )
+        }
+        .unwrap();
+        let exec = graph.instantiate().unwrap();
+        exec.launch(&stream).unwrap();
+        stream.synchronize().unwrap();
+        let mut result = [0.0f32];
+        stream.memcpy_dtoh(&output, &mut result).unwrap();
+        assert_eq!(result[0], 6.0f32);
+    }
+
+    // CUDA Graph Tests
+
+    #[test]
+    fn test_cuda_graph_basic_execution() {
+        let Some(stream) = get_cuda_stream() else {
+            return;
+        };
+        let size = 1024;
+        let mut cx = Graph::default();
+        let a = cx.tensor(size).persist();
+        let b = cx.tensor(size).persist();
+        let c = ((a + b) * a + b).output();
+
+        let mut rt = RocmRuntime::initialize(stream);
+        let data_a = random_f32_vec(size, 42, -0.5, 0.5);
+        let data_b = random_f32_vec(size, 43, -0.5, 0.5);
+        rt.set_data(a, data_a.clone());
+        rt.set_data(b, data_b.clone());
+        cx.build_search_space::<RocmRuntime>();
+        rt = cx.search(rt, 5);
+        rt.execute(&cx.dyn_map);
+        let result1 = rt.get_f32(c);
+        rt.execute(&cx.dyn_map);
+        let eps = dtype_epsilon(luminal::dtype::DType::F32);
+        let tol = eps * TOLERANCE_SAFETY_FACTOR;
+        assert_close(&result1, &rt.get_f32(c), tol, tol);
+        let expected: Vec<f32> = data_a
+            .iter()
+            .zip(&data_b)
+            .map(|(a, b)| (a + b) * a + b)
+            .collect();
+        assert_close(&result1, &expected, tol, tol);
+    }
+
+    #[test]
+    fn test_cuda_graph_multiple_executions() {
+        let Some(stream) = get_cuda_stream() else {
+            return;
+        };
+        let size = 2048;
+        let mut cx = Graph::default();
+        let a = cx.tensor(size).persist();
+        let b = cx.tensor(size).persist();
+        let c = (a + b + a + b).output();
+
+        let mut rt = RocmRuntime::initialize(stream);
+        let data_a = random_f32_vec(size, 42, -0.5, 0.5);
+        let data_b = random_f32_vec(size, 43, -0.5, 0.5);
+        rt.set_data(a, data_a.clone());
+        rt.set_data(b, data_b.clone());
+        cx.build_search_space::<RocmRuntime>();
+        rt = cx.search(rt, 5);
+        let mut results = Vec::new();
+        for _ in 0..5 {
+            rt.execute(&cx.dyn_map);
+            results.push(rt.get_f32(c));
+        }
+        let eps = dtype_epsilon(luminal::dtype::DType::F32);
+        let tol = eps * TOLERANCE_SAFETY_FACTOR;
+        for result in &results {
+            assert_close(result, &results[0], tol, tol);
+        }
+        let expected: Vec<f32> = data_a
+            .iter()
+            .zip(&data_b)
+            .map(|(a, b)| a + b + a + b)
+            .collect();
+        assert_close(&results[0], &expected, tol, tol);
+    }
+
+    #[test]
+    fn test_cuda_graph_dyn_dims_surgical_update() {
+        let Some(stream) = get_cuda_stream() else {
+            return;
+        };
+        let size = 512;
+        let mut cx = Graph::default();
+        let a = cx.tensor('s');
+        let b = cx.tensor('s');
+        let c = (a + b).output();
+        let d = (c * a).output();
+
+        let mut rt = RocmRuntime::initialize(stream);
+        let data_a = random_f32_vec(size, 42, -0.5, 0.5);
+        let data_b = random_f32_vec(size, 43, -0.5, 0.5);
+        rt.set_data(a, data_a.clone());
+        rt.set_data(b, data_b.clone());
+        cx.set_dim('s', size);
+        cx.build_search_space::<RocmRuntime>();
+        rt = cx.search(rt, 5);
+        rt.execute(&cx.dyn_map);
+        let expected: Vec<f32> = data_a
+            .iter()
+            .zip(&data_b)
+            .map(|(a, b)| (a + b) * a)
+            .collect();
+        let eps = dtype_epsilon(luminal::dtype::DType::F32);
+        let tol = eps * TOLERANCE_SAFETY_FACTOR;
+        assert_close(&rt.get_f32(d), &expected, tol, tol);
+        let size = 1024;
+        let data_a2 = random_f32_vec(size, 44, -0.5, 0.5);
+        let data_b2 = random_f32_vec(size, 45, -0.5, 0.5);
+        rt.set_data(a, data_a2.clone());
+        rt.set_data(b, data_b2.clone());
+        cx.set_dim('s', size);
+        rt.execute(&cx.dyn_map);
+        let expected2: Vec<f32> = data_a2
+            .iter()
+            .zip(&data_b2)
+            .map(|(a, b)| (a + b) * a)
+            .collect();
+        assert_close(&rt.get_f32(d), &expected2, tol, tol);
+    }
+
+    #[test]
+    fn test_single_kernel_in_graph() {
+        let Some(stream) = get_cuda_stream() else {
+            return;
+        };
+        let size = 1024;
+        let mut cx = Graph::default();
+        let a = cx.tensor(size);
+        let b = cx.tensor(size);
+        let c = (a + b).output();
+
+        let mut rt = RocmRuntime::initialize(stream);
+        let data_a = random_f32_vec(size, 42, -0.5, 0.5);
+        let data_b = random_f32_vec(size, 43, -0.5, 0.5);
+        rt.set_data(a, data_a.clone());
+        rt.set_data(b, data_b.clone());
+        cx.build_search_space::<RocmRuntime>();
+        rt = cx.search(rt, 5);
+        rt.execute(&cx.dyn_map);
+        let expected: Vec<f32> = data_a.iter().zip(&data_b).map(|(a, b)| a + b).collect();
+        let eps = dtype_epsilon(luminal::dtype::DType::F32);
+        let tol = eps * TOLERANCE_SAFETY_FACTOR;
+        assert_close(&rt.get_f32(c), &expected, tol, tol);
+        assert!(rt.last_kernel_stats.iter().any(|s| s.name == "CudaGraph"));
+    }
+
+    #[test]
+    fn test_cuda_graph_chain_performance() {
+        let Some(stream) = get_cuda_stream() else {
+            return;
+        };
+        let size = 4096;
+        let mut cx = Graph::default();
+        let a = cx.tensor(size).persist();
+        let b = cx.tensor(size).persist();
+        let mut result = a + b;
+        for _ in 0..5 {
+            result += a;
+            result *= b;
+        }
+        let output = result.output();
+
+        let mut rt = RocmRuntime::initialize(stream);
+        let data_a = random_f32_vec(size, 42, -0.5, 0.5);
+        let data_b = random_f32_vec(size, 43, -0.5, 0.5);
+        rt.set_data(a, data_a.clone());
+        rt.set_data(b, data_b.clone());
+        cx.build_search_space::<RocmRuntime>();
+        rt = cx.search(rt, 5);
+        for _ in 0..10 {
+            rt.execute(&cx.dyn_map);
+        }
+        let mut expected: Vec<f32> = data_a.iter().zip(&data_b).map(|(a, b)| a + b).collect();
+        for _ in 0..5 {
+            expected = expected.iter().zip(&data_a).map(|(r, a)| r + a).collect();
+            expected = expected.iter().zip(&data_b).map(|(r, b)| r * b).collect();
+        }
+        assert_close(&rt.get_f32(output), &expected, 1e-2, 1e-2);
+    }
+
+    /// Test that CUDA graphs produce correct results when dynamic dimensions
+    /// change incrementally across many executions (simulating a decode loop
+    /// where position offset increments each step).
+    #[test]
+    fn test_cuda_graph_incremental_dim_changes() {
+        let Some(stream) = get_cuda_stream() else {
+            return;
+        };
+        let mut cx = Graph::default();
+        let a = cx.tensor('s');
+        let b = cx.tensor('s');
+        let c = ((a + b) * a).output();
+
+        let initial_size = 128;
+        cx.set_dim('s', initial_size);
+        let mut rt = RocmRuntime::initialize(stream);
+        let data_a = random_f32_vec(initial_size, 42, -0.5, 0.5);
+        let data_b = random_f32_vec(initial_size, 43, -0.5, 0.5);
+        rt.set_data(a, data_a.clone());
+        rt.set_data(b, data_b.clone());
+        cx.build_search_space::<RocmRuntime>();
+        rt = cx.search(rt, 5);
+
+        // Initial execution
+        rt.execute(&cx.dyn_map);
+        let eps = dtype_epsilon(luminal::dtype::DType::F32);
+        let tol = eps * TOLERANCE_SAFETY_FACTOR;
+        let expected: Vec<f32> = data_a
+            .iter()
+            .zip(&data_b)
+            .map(|(a, b)| (a + b) * a)
+            .collect();
+        assert_close(&rt.get_f32(c), &expected, tol, tol);
+
+        // Incrementally change the dynamic dimension 10 times,
+        // simulating decode steps where position offset grows.
+        for step in 1..=10usize {
+            let size = initial_size + step;
+            cx.set_dim('s', size);
+            let da = random_f32_vec(size, 100 + step as u64, -0.5, 0.5);
+            let db = random_f32_vec(size, 200 + step as u64, -0.5, 0.5);
+            rt.set_data(a, da.clone());
+            rt.set_data(b, db.clone());
+            rt.execute(&cx.dyn_map);
+            let expected: Vec<f32> = da.iter().zip(&db).map(|(a, b)| (a + b) * a).collect();
+            assert_close(&rt.get_f32(c), &expected, tol, tol);
+        }
+    }
+}

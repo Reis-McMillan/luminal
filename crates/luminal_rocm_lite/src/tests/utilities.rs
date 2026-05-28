@@ -604,7 +604,7 @@ pub fn test_unary_cuda<T: TestDType>(
     let result = T::get_from_runtime(&rt, b.id);
 
     // Reference using candle on CUDA
-    let device = Device::new_cuda(0).expect("Candle CUDA device required for test");
+    let device = Device::Cpu;
     let ref_a = Tensor::from_slice(&input_data, shape, &device).unwrap();
     let ref_b = ref_func(ref_a).flatten_all().unwrap();
     let ref_vec = T::candle_to_vec(&ref_b);
@@ -679,7 +679,7 @@ pub fn test_binary_cuda<T: TestDType>(
     let result = T::get_from_runtime(&rt, c.id);
 
     // Reference using candle on CUDA
-    let device = Device::new_cuda(0).expect("Candle CUDA device required for test");
+    let device = Device::Cpu;
     let ref_a = Tensor::from_slice(&a_data, a_shape, &device).unwrap();
     let ref_b = Tensor::from_slice(&b_data, b_shape, &device).unwrap();
     let ref_c = ref_func(ref_a, ref_b).flatten_all().unwrap();

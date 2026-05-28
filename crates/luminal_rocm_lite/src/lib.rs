@@ -17,7 +17,7 @@ mod tests;
 
 use rocmrc::{
     HipResult,
-    driver::{HipContext, DriverError, sys as driver_sys},
+    driver::{HipContext, sys as driver_sys},
     hiprtc::{
         Hsaco,
         result::{self as hiprtc_result, HiprtcError},
@@ -54,7 +54,6 @@ const ROCM_HIPRTC_INCLUDE_PATHS: [&str; 2] = ["/opt/rocm/include", "/usr/include
 
 #[derive(Debug)]
 pub(crate) enum RocmModuleImageCompileFailure {
-    ComputeCapability(DriverError),
     Hiprtc {
         stage: &'static str,
         error: HiprtcError,
@@ -79,9 +78,6 @@ impl std::fmt::Display for RocmModuleImageCompileError {
             write!(f, " for {target_arch}")?;
         }
         match &self.failure {
-            RocmModuleImageCompileFailure::ComputeCapability(error) => {
-                write!(f, ": failed to query compute capability: {error}")?;
-            }
             RocmModuleImageCompileFailure::Hiprtc { stage, error } => {
                 write!(f, ": HipRTC {stage} failed: {error}")?;
             }
@@ -167,7 +163,7 @@ fn rocm_hiprtc_compile_options(target_arch: &str) -> Vec<String> {
         .into_iter()
         .map(|path| format!("--include-path={path}"))
         .collect::<Vec<_>>();
-    options.push(format!("--gpu-architecture={target_arch}"));
+    options.push(format!("--offload-arch={target_arch}"));
     options
 }
 
@@ -214,17 +210,7 @@ pub(crate) fn compile_module_image_for_current_device<S: AsRef<str>>(
     src: S,
 ) -> Result<Hsaco, RocmModuleImageCompileError> {
     let (driver_version, runtime_version) = rocm_driver_diagnostics();
-    let (major, minor) = ctx.compute_capability().map_err(|error| {
-        build_module_image_compile_error(
-            None,
-            driver_version,
-            runtime_version,
-            &[],
-            None,
-            RocmModuleImageCompileFailure::ComputeCapability(error),
-        )
-    })?;
-    let target_arch = format!("sm_{major}{minor}");
+    let target_arch = ctx.gfx_arch().to_string();
     let hiprtc_options = rocm_hiprtc_compile_options(&target_arch);   // Vec<String>
 
     let program = hiprtc_result::create_program(src.as_ref(), "kernel.hip").map_err(|error| {

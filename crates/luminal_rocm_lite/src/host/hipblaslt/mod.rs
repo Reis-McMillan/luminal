@@ -1395,7 +1395,7 @@ mod tests {
     }
 
     #[test]
-    fn hipblasLt_pointers_alias_output_as_c_for_two_input_beta_zero() {
+    fn hipblaslt_pointers_alias_output_as_c_for_two_input_beta_zero() {
         let output = NodeIndex::new(0);
         let a = NodeIndex::new(1);
         let b = NodeIndex::new(2);
@@ -1420,7 +1420,7 @@ mod tests {
     }
 
     #[test]
-    fn hipblasLt_pointers_ignore_extra_inputs_for_beta_zero() {
+    fn hipblaslt_pointers_ignore_extra_inputs_for_beta_zero() {
         let output = NodeIndex::new(0);
         let a = NodeIndex::new(1);
         let b = NodeIndex::new(2);
@@ -1446,7 +1446,7 @@ mod tests {
     }
 
     #[test]
-    fn hipblasLt_pointers_use_distinct_c_input_when_present() {
+    fn hipblaslt_pointers_use_distinct_c_input_when_present() {
         let output = NodeIndex::new(0);
         let a = NodeIndex::new(1);
         let b = NodeIndex::new(2);
@@ -1472,7 +1472,7 @@ mod tests {
     }
 
     #[test]
-    fn hipblasLt_pointers_use_bias_input_for_bias_epilogue() {
+    fn hipblaslt_pointers_use_bias_input_for_bias_epilogue() {
         let output = NodeIndex::new(0);
         let a = NodeIndex::new(1);
         let b = NodeIndex::new(2);
@@ -1498,7 +1498,7 @@ mod tests {
     }
 
     #[test]
-    fn hipblasLt_pointers_use_tensor_scale_inputs_after_base_inputs() {
+    fn hipblaslt_pointers_use_tensor_scale_inputs_after_base_inputs() {
         let output = NodeIndex::new(0);
         let a = NodeIndex::new(1);
         let b = NodeIndex::new(2);
@@ -1533,7 +1533,7 @@ mod tests {
     }
 
     #[test]
-    fn hipblasLt_pointers_reject_two_input_nonzero_beta() {
+    fn hipblaslt_pointers_reject_two_input_nonzero_beta() {
         let output = NodeIndex::new(0);
         let a = NodeIndex::new(1);
         let b = NodeIndex::new(2);
@@ -1557,7 +1557,7 @@ mod tests {
     }
 
     #[test]
-    fn hipblasLt_pointers_reject_missing_bias_input() {
+    fn hipblaslt_pointers_reject_missing_bias_input() {
         let output = NodeIndex::new(0);
         let a = NodeIndex::new(1);
         let b = NodeIndex::new(2);

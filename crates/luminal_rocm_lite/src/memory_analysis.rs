@@ -11,7 +11,7 @@ use luminal::{
     prelude::*,
 };
 
-const MEMORY_ANALYSIS_RULESET: &str = "cuda_memory_analysis";
+const MEMORY_ANALYSIS_RULESET: &str = "rocm_memory_analysis";
 const MAX_EXACT_MEMORY_STATES_PER_CLASS: usize = 64;
 
 const DTYPE_BITS: &[(&str, usize)] = &[
@@ -38,30 +38,30 @@ pub(crate) fn rocm_memory_analysis_pass(
 
     let mut program = String::from(
         r#"
-(ruleset cuda_memory_analysis)
-(relation cuda_output_bytes (OpKind Expression))
-(relation cuda_local_memory (IR Expression))
+(ruleset rocm_memory_analysis)
+(relation rocm_output_bytes (OpKind Expression))
+(relation rocm_local_memory (IR Expression))
 
 (rule ((= ?node (Input ?id ?label ?dtype)))
-      ((cuda_local_memory ?node (MNum 0)))
-      :ruleset cuda_memory_analysis
-      :name "cuda-memory-input")
+      ((rocm_local_memory ?node (MNum 0)))
+      :ruleset rocm_memory_analysis
+      :name "rocm-memory-input")
 
 (rule ((= ?node (Output ?inp ?id)))
-      ((cuda_local_memory ?node (MNum 0)))
-      :ruleset cuda_memory_analysis
-      :name "cuda-memory-output")
+      ((rocm_local_memory ?node (MNum 0)))
+      :ruleset rocm_memory_analysis
+      :name "rocm-memory-output")
 
 (rule ((= ?node (OutputJoin ?a ?b)))
-      ((cuda_local_memory ?node (MNum 0)))
-      :ruleset cuda_memory_analysis
-      :name "cuda-memory-output-join")
+      ((rocm_local_memory ?node (MNum 0)))
+      :ruleset rocm_memory_analysis
+      :name "rocm-memory-output-join")
 
 (rule ((= ?node (Op ?kind ?inputs))
-       (cuda_output_bytes ?kind ?bytes))
-      ((cuda_local_memory ?node ?bytes))
-      :ruleset cuda_memory_analysis
-      :name "cuda-memory-op-local")
+       (rocm_output_bytes ?kind ?bytes))
+      ((rocm_local_memory ?node ?bytes))
+      :ruleset rocm_memory_analysis
+      :name "rocm-memory-op-local")
 "#,
     );
 
@@ -86,7 +86,7 @@ pub(crate) fn rocm_memory_analysis_pass(
                 .original_eclasses
                 .saturating_sub(stats.split_eclasses);
             eprintln!(
-                "   CUDA memory pruning removed {removed_enodes} enodes and {removed_eclasses} eclasses ({} -> {} enodes, {} -> {} eclasses, limit={} bytes)",
+                "   ROCm memory pruning removed {removed_enodes} enodes and {removed_eclasses} eclasses ({} -> {} enodes, {} -> {} eclasses, limit={} bytes)",
                 stats.original_enodes,
                 stats.split_enodes,
                 stats.original_eclasses,
@@ -309,7 +309,7 @@ impl<'a> StateSplitter<'a> {
             split,
             limit,
             dyn_map,
-            sort_by_name: cuda_sort_map(),
+            sort_by_name: rocm_sort_map(),
             ir_memo: FxHashMap::default(),
             list_memo: FxHashMap::default(),
             ir_states_by_owner: FxHashMap::default(),
@@ -795,7 +795,7 @@ impl<'a> ChoiceMemoryEstimator<'a> {
             egraph,
             choices,
             dyn_map,
-            sort_by_name: cuda_sort_map(),
+            sort_by_name: rocm_sort_map(),
             ir_cache: FxHashMap::default(),
             list_cache: FxHashMap::default(),
             visiting_ir: FxHashSet::default(),
@@ -1054,7 +1054,7 @@ fn choose_kind_node<'a>(egraph: &'a SerializedEGraph, kind_class: &ClassId) -> O
     let is_kernel = |node: &&NodeId| -> bool {
         let label = &egraph.enodes[*node].0;
         label.starts_with("Kernel")
-            || label.starts_with("Cuda")
+            || label.starts_with("Rocm")
             || label == "FusionStart"
             || label == "FusionEnd"
     };
@@ -1169,7 +1169,7 @@ fn validate_unique_loop_markers(egraph: &SerializedEGraph) {
         for key in loop_marker_keys_for_node(egraph, node) {
             if let Some(previous) = seen.insert(key.clone(), node.clone()) {
                 panic!(
-                    "CUDA memory splitter duplicated loop marker {key:?}: {previous:?} and {node:?}"
+                    "ROCm memory splitter duplicated loop marker {key:?}: {previous:?} and {node:?}"
                 );
             }
         }
@@ -1231,7 +1231,7 @@ fn field_signature<'a>(
         .collect()
 }
 
-fn cuda_sort_map() -> FxHashMap<String, SortDef> {
+fn rocm_sort_map() -> FxHashMap<String, SortDef> {
     <(crate::kernel::Ops, crate::host::Ops) as luminal::op::IntoEgglogOp>::into_vec()
         .into_iter()
         .map(|op| {
@@ -1250,7 +1250,7 @@ fn local_output_bytes<'a>(
 ) -> Option<Expression> {
     match sort.name.as_str() {
         name if zero_local_op_kind(name) => Some(0.into()),
-        name if name.starts_with("Cuda") || name == "FusionStart" => Some(0.into()),
+        name if name.starts_with("Rocm") || name == "FusionStart" => Some(0.into()),
         "KernelConstant" => Some(4.into()),
         "KernelIota" => Some(expr_field(egraph, sort, kind_children, "range", expr_cache)? * 4),
         "KernelLessThan" => Some(n_elements_field(
@@ -1281,7 +1281,7 @@ fn local_output_bytes<'a>(
             let dtype = dtype_field(egraph, sort, kind_children, "dtype")?;
             Some(bytes_for_elements(size, dtype))
         }
-        "cublaslt" | "cublaslt_scaled" => {
+        "hipblaslt" | "hipblaslt_scaled" => {
             let batch = expr_field(egraph, sort, kind_children, "batch_count", expr_cache)?;
             let m = expr_field(egraph, sort, kind_children, "m", expr_cache)?;
             let n = expr_field(egraph, sort, kind_children, "n", expr_cache)?;
@@ -1359,7 +1359,7 @@ fn n_elements_field<'a>(
 fn output_bytes_rules(sort: &SortDef) -> Vec<String> {
     match sort.name.as_str() {
         name if zero_local_op_kind(name) => vec![output_bytes_rule(sort, "(MNum 0)", "zero")],
-        name if name.starts_with("Cuda") || name == "FusionStart" => {
+        name if name.starts_with("Rocm") || name == "FusionStart" => {
             vec![output_bytes_rule(sort, "(MNum 0)", "zero")]
         }
         "KernelConstant" => vec![output_bytes_rule(sort, "(MNum 4)", "f32-scalar")],
@@ -1370,27 +1370,27 @@ fn output_bytes_rules(sort: &SortDef) -> Vec<String> {
         )],
         "KernelLessThan" => vec![output_bytes_rule_with_facts(
             sort,
-            "?__cuda_elems",
+            "?__rocm_elems",
             "bool-shape",
             None,
-            &["(= ?__cuda_elems (n_elements ?shape))"],
+            &["(= ?__rocm_elems (n_elements ?shape))"],
         )],
         "KernelSoftmax" => vec![output_bytes_rule_with_facts(
             sort,
-            "(MMul ?__cuda_elems (MNum 4))",
+            "(MMul ?__rocm_elems (MNum 4))",
             "f32-shape",
             None,
-            &["(= ?__cuda_elems (n_elements ?shape))"],
+            &["(= ?__rocm_elems (n_elements ?shape))"],
         )],
         "KernelEmbed" => vec![output_bytes_rule_with_facts(
             sort,
-            "(MMul (MMul ?__cuda_elems ?embed_dim) (MNum 4))",
+            "(MMul (MMul ?__rocm_elems ?embed_dim) (MNum 4))",
             "f32-embed",
             None,
-            &["(= ?__cuda_elems (n_elements ?batch_shape))"],
+            &["(= ?__rocm_elems (n_elements ?batch_shape))"],
         )],
         "KernelCast" => dtype_output_bytes_rules(sort, "size", "dtype"),
-        "cublaslt" | "cublaslt_scaled" => {
+        "hipblaslt" | "hipblaslt_scaled" => {
             dtype_output_bytes_rules_for_expr(sort, "(MMul (MMul ?batch_count ?m) ?n)", "d_dtype")
         }
         "GLUMoE" => vec![output_bytes_rule(
@@ -1445,10 +1445,10 @@ fn dtype_output_bytes_rules_for_shape(
         .iter()
         .map(|(dtype, bits)| {
             let dtype_value = format!("({dtype})");
-            let elem_fact = format!("(= ?__cuda_elems (n_elements ?{shape_field}))");
+            let elem_fact = format!("(= ?__rocm_elems (n_elements ?{shape_field}))");
             output_bytes_rule_with_facts(
                 sort,
-                &ceil_bytes_expr("?__cuda_elems", *bits),
+                &ceil_bytes_expr("?__rocm_elems", *bits),
                 &format!("{dtype}-bytes"),
                 Some((dtype_field, dtype_value.as_str())),
                 &[elem_fact.as_str()],
@@ -1507,9 +1507,9 @@ fn output_bytes_rule_with_facts(
     format!(
         "(rule
     ({facts})
-    ((cuda_output_bytes ?kind {bytes_expr}))
+    ((rocm_output_bytes ?kind {bytes_expr}))
     :ruleset {MEMORY_ANALYSIS_RULESET}
-    :name \"cuda-memory-{}-{suffix}\"
+    :name \"rocm-memory-{}-{suffix}\"
 )",
         sort.name
     )
@@ -1540,7 +1540,7 @@ mod tests {
         let ops = ops();
         let late_pass = rocm_memory_analysis_pass(&ops, limit, &FxHashMap::default());
         run_egglog_with_late_passes(program, root, &ops, false, &[late_pass])
-            .expect("cuda memory pass should parse and run")
+            .expect("rocm memory pass should parse and run")
     }
 
     fn kernel_mod(name: &str, size: &str, a: &str, b: &str) -> String {
@@ -1598,7 +1598,7 @@ mod tests {
     }
 
     #[test]
-    fn cuda_memory_late_pass_runs_on_kernel_mod() {
+    fn rocm_memory_late_pass_runs_on_kernel_mod() {
         let ops = ops();
         let late_pass = rocm_memory_analysis_pass(&ops, None, &FxHashMap::default());
         let program = format!(
@@ -1612,11 +1612,11 @@ mod tests {
         );
 
         run_egglog_with_late_passes(&program, "t3", &ops, false, &[late_pass])
-            .expect("cuda memory pass should parse and run");
+            .expect("rocm memory pass should parse and run");
     }
 
     #[test]
-    fn cuda_memory_estimates_loop_markers_as_zero_local_memory() {
+    fn rocm_memory_estimates_loop_markers_as_zero_local_memory() {
         let ops = ops();
         let late_pass = rocm_memory_analysis_pass(&ops, None, &FxHashMap::default());
         let program = r#"
@@ -1628,7 +1628,7 @@ mod tests {
         "#;
 
         let egraph = run_egglog_with_late_passes(program, "t4", &ops, false, &[late_pass])
-            .expect("cuda memory pass should parse and run");
+            .expect("rocm memory pass should parse and run");
         let mut rng = rand::rng();
         let choices = random_initial_choice(&egraph, &mut rng);
 
@@ -1639,7 +1639,7 @@ mod tests {
     }
 
     #[test]
-    fn cuda_memory_state_split_does_not_duplicate_loop_markers() {
+    fn rocm_memory_state_split_does_not_duplicate_loop_markers() {
         let program = format!(
             r#"
             (let t0 (Input 0 "" (F32)))
@@ -1688,7 +1688,7 @@ mod tests {
     }
 
     #[test]
-    fn cuda_memory_estimates_peak_for_two_live_inputs() {
+    fn rocm_memory_estimates_peak_for_two_live_inputs() {
         let program = format!(
             r#"
             (let t0 (Input 0 "" (F32)))
@@ -1713,7 +1713,7 @@ mod tests {
     }
 
     #[test]
-    fn cuda_memory_aliasing_scatter_nocopy_does_not_allocate_output() {
+    fn rocm_memory_aliasing_scatter_nocopy_does_not_allocate_output() {
         let program = format!(
             r#"
             (let t0 (Input 0 "" (F32)))
@@ -1747,7 +1747,7 @@ mod tests {
     }
 
     #[test]
-    fn cuda_memory_prunes_alternative_with_no_feasible_state() {
+    fn rocm_memory_prunes_alternative_with_no_feasible_state() {
         let program = format!(
             r#"
             (let t0 (Input 0 "" (F32)))
@@ -1773,7 +1773,7 @@ mod tests {
     }
 
     #[test]
-    fn cuda_memory_state_split_uses_dynamic_dimensions() {
+    fn rocm_memory_state_split_uses_dynamic_dimensions() {
         let ops = ops();
         let mut dyn_map = FxHashMap::default();
         dyn_map.insert('s', 4);
@@ -1789,7 +1789,7 @@ mod tests {
         );
 
         let egraph = run_egglog_with_late_passes(&program, "out", &ops, false, &[late_pass])
-            .expect("cuda memory pass should parse and run");
+            .expect("rocm memory pass should parse and run");
         assert_eq!(count_choice_sets_up_to(&egraph, 10), 1);
 
         let mut rng = rand::rng();
@@ -1801,7 +1801,7 @@ mod tests {
     }
 
     #[test]
-    fn cuda_memory_prunes_parent_only_when_no_child_combination_fits() {
+    fn rocm_memory_prunes_parent_only_when_no_child_combination_fits() {
         let program = format!(
             r#"
             (let t0 (Input 0 "" (F32)))
@@ -1828,7 +1828,7 @@ mod tests {
     }
 
     #[test]
-    fn cuda_memory_state_split_keeps_only_valid_extractions() {
+    fn rocm_memory_state_split_keeps_only_valid_extractions() {
         let program = format!(
             r#"
             (let t0 (Input 0 "" (F32)))

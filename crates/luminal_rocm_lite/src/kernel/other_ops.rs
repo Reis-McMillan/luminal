@@ -153,7 +153,7 @@ extern \"C\" {{
             thread_sum += (float)in[in_start + i * iter_stride];
 
         for (int offset = 16; offset > 0; offset >>= 1)
-            thread_sum += __shfl_down_sync(0xffffffff, thread_sum, offset);
+            thread_sum += __shfl_down_sync(0xffffffffffffffffULL, thread_sum, offset);
 
         __shared__ float warp_sums[{n_warps}];
         int lane = threadIdx.x & 31;
@@ -805,7 +805,7 @@ impl KernelOp for KernelBatchMatVec {
             "
 #define WARP_SIZE 32
 #define THREADS_PER_BLOCK 256
-#define FULL_MASK 0xffffffff
+#define FULL_MASK 0xffffffffffffffffULL
 {dyn_defines}
 extern \"C\" {{
     __global__ void batch_matvec(float *out, const float *A, const float *B{dyn_dims_param}) {{
@@ -1083,7 +1083,7 @@ impl KernelOp for KernelBatchMatMul {
             "
 #define WARP_SIZE 32
 #define THREADS_PER_BLOCK 256
-#define FULL_MASK 0xffffffff
+#define FULL_MASK 0xffffffffffffffffULL
 {dyn_defines}
 extern \"C\" {{
     __global__ void batch_matmul(float *out, const float *A, const float *B{dyn_dims_param}) {{
@@ -1335,7 +1335,7 @@ impl KernelOp for KernelSoftmax {
             "
 #define WARP_SIZE 32
 #define THREADS_PER_BLOCK 256
-#define FULL_MASK 0xffffffff
+#define FULL_MASK 0xffffffffffffffffULL
 #define NEG_INF_F __int_as_float(0xff800000)
 {dyn_defines}
 extern \"C\" {{

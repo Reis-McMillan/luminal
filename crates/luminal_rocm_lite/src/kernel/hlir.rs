@@ -181,7 +181,7 @@ impl KernelOp for KernelMaxReduce {
             "{includes}
 #define WARP_SIZE 32
 #define THREADS_PER_BLOCK 256
-#define FULL_MASK 0xffffffff
+#define FULL_MASK 0xffffffffffffffffULL
 #define NEG_INF_F __int_as_float(0xff800000)
 {dyn_defines}
 extern \"C\" {{
@@ -407,7 +407,7 @@ impl KernelOp for KernelSumReduce {
             "{includes}
 #define WARP_SIZE 32
 #define THREADS_PER_BLOCK 256
-#define FULL_MASK 0xffffffff
+#define FULL_MASK 0xffffffffffffffffULL
 {dyn_defines}
 extern \"C\" {{
     __global__ void reduce_sum_k({dtype} *out, const {dtype} *in_data{dyn_dims_param}) {{

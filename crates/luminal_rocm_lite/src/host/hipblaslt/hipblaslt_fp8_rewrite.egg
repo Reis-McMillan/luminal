@@ -189,7 +189,7 @@
 (rule
     (
         ; Fusion growth can make the live path consume a raw FP8 hipBLASLt
-        ; candidate through an internal CudaBinaryElementwise scale multiply,
+        ; candidate through an internal RocmBinaryElementwise scale multiply,
         ; instead of the original HLIR output-scale Mul. The scalar scale
         ; product is tensor-wide, so the two scalar factors can be passed as
         ; hipBLASLt A/B scale inputs and the internal multiply can be bypassed.
@@ -220,7 +220,7 @@
             (ICons ?a_scale (INil))))
         (= ?fs_b_scale (Op (FusionStart (ENil) (ENil) (F32))
             (ICons ?b_scale (INil))))
-        (= ?scale_product_inner (Op (CudaBinaryElementwise
+        (= ?scale_product_inner (Op (RocmBinaryElementwise
             "Mul"
             (ENil)
             (ENil)
@@ -235,7 +235,7 @@
             ?scale_strides
             (F32))
             (ICons ?scale_product (INil))))
-        (= ?fused_scale (Op (CudaBinaryElementwise
+        (= ?fused_scale (Op (RocmBinaryElementwise
             "Mul"
             ?out_shape
             ?cast_strides
@@ -293,7 +293,7 @@
             (ICons ?a_scale (INil))))
         (= ?fs_b_scale (Op (FusionStart (ENil) (ENil) (F32))
             (ICons ?b_scale (INil))))
-        (= ?scale_product_inner (Op (CudaBinaryElementwise
+        (= ?scale_product_inner (Op (RocmBinaryElementwise
             "Mul"
             (ENil)
             (ENil)
@@ -308,7 +308,7 @@
             ?scale_strides
             (F32))
             (ICons ?scale_product (INil))))
-        (= ?fused_scale (Op (CudaBinaryElementwise
+        (= ?fused_scale (Op (RocmBinaryElementwise
             "Mul"
             ?out_shape
             ?cast_strides
@@ -338,7 +338,7 @@
             ?cbc ?csa ?csb ?csc ?csd
             ?cadt ?cbdt ?ccdt ?cddt ?ccompute ?cscale ?calpha ?cbeta ?cepilogue)
             (ICons ?a (ICons ?b (INil)))))
-        (delete (Op (CudaBinaryElementwise
+        (delete (Op (RocmBinaryElementwise
             "Mul"
             ?out_shape
             ?cast_strides

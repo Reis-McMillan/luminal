@@ -2,7 +2,7 @@
 // Fusion boundary markers — FusionStart and FusionEnd.
 //
 // Tag-like LLIR ops that bracket a region of elementwise ops destined to
-// be emitted as a single CUDA kernel:
+// be emitted as a single HIP kernel:
 //   - N FusionStart nodes per region (one per FS leaf — distinct external
 //     reads),
 //   - exactly 1 FusionEnd per region.

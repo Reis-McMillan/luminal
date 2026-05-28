@@ -376,7 +376,7 @@ pub fn record_event_on_stream(
 mod tests {
     use super::*;
     use candle_core::{Device, Tensor};
-    use cudarc::driver::HipContext;
+    use rocmrc::HipContext;
     use luminal::prelude::*;
     use proptest::prelude::*;
     use rand::{Rng, SeedableRng, rngs::StdRng};
@@ -427,12 +427,12 @@ mod tests {
                 cu_func,
             )
         };
-        assert!(result == sys::cudaError_enum::CUDA_SUCCESS);
+        assert!(result == sys::hipError_t::hipSuccess);
     }
 
     #[test]
     fn test_graph_with_kernel() {
-        use cudarc::driver::{CudaSlice, DevicePtr};
+        use rocmrc::{HipSlice, DevicePtr};
         let Ok(ctx) = HipContext::new(0) else { return };
         let kernel_src = r#"extern "C" __global__ void test_kernel(float* out, float* in1) { if (threadIdx.x == 0) out[0] = in1[0] + 1.0f; }"#;
         let Ok(ptx) = crate::compile_module_image_for_current_device(&ctx, kernel_src) else {
@@ -441,8 +441,8 @@ mod tests {
         let module = ctx.load_module(ptx).unwrap();
         let func = module.load_function("test_kernel").unwrap();
         let stream = ctx.default_stream();
-        let output: CudaSlice<f32> = unsafe { stream.alloc(1) }.unwrap();
-        let mut input: CudaSlice<f32> = unsafe { stream.alloc(1) }.unwrap();
+        let output: HipSlice<f32> = unsafe { stream.alloc(1) }.unwrap();
+        let mut input: HipSlice<f32> = unsafe { stream.alloc(1) }.unwrap();
         stream.memcpy_htod(&[5.0f32], &mut input).unwrap();
         let cu_func = unsafe { func.raw_function() };
         let mut graph = RocmGraphHandle::new(ctx.clone()).unwrap();
@@ -471,7 +471,7 @@ mod tests {
 
     #[test]
     fn test_cuda_graph_basic_execution() {
-        let Some(stream) = get_cuda_stream() else {
+        let Some(stream) = get_rocm_stream() else {
             return;
         };
         let size = 1024;
@@ -503,7 +503,7 @@ mod tests {
 
     #[test]
     fn test_cuda_graph_multiple_executions() {
-        let Some(stream) = get_cuda_stream() else {
+        let Some(stream) = get_rocm_stream() else {
             return;
         };
         let size = 2048;
@@ -539,7 +539,7 @@ mod tests {
 
     #[test]
     fn test_cuda_graph_dyn_dims_surgical_update() {
-        let Some(stream) = get_cuda_stream() else {
+        let Some(stream) = get_rocm_stream() else {
             return;
         };
         let size = 512;
@@ -583,7 +583,7 @@ mod tests {
 
     #[test]
     fn test_single_kernel_in_graph() {
-        let Some(stream) = get_cuda_stream() else {
+        let Some(stream) = get_rocm_stream() else {
             return;
         };
         let size = 1024;
@@ -609,7 +609,7 @@ mod tests {
 
     #[test]
     fn test_cuda_graph_chain_performance() {
-        let Some(stream) = get_cuda_stream() else {
+        let Some(stream) = get_rocm_stream() else {
             return;
         };
         let size = 4096;
@@ -646,7 +646,7 @@ mod tests {
     /// where position offset increments each step).
     #[test]
     fn test_cuda_graph_incremental_dim_changes() {
-        let Some(stream) = get_cuda_stream() else {
+        let Some(stream) = get_rocm_stream() else {
             return;
         };
         let mut cx = Graph::default();

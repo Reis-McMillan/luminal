@@ -1,4 +1,4 @@
-use cudarc::driver::CudaContext;
+use rocmrc::HipContext;
 use luminal::prelude::*;
 use tracing::{Level, enabled};
 
@@ -23,7 +23,7 @@ pub fn kernel_add_bandwidth_test() {
         .map(|i| ((i + 500) % 1000) as f32 * 0.001)
         .collect();
 
-    let ctx = CudaContext::new(0).unwrap();
+    let ctx = HipContext::new(0).unwrap();
     ctx.bind_to_thread().unwrap();
     let stream = ctx.default_stream();
 

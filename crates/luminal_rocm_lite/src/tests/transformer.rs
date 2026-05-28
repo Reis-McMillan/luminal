@@ -5,7 +5,7 @@
 
 use luminal::prelude::*;
 
-use super::utilities::{assert_close, get_cuda_stream, random_f32_vec};
+use super::utilities::{assert_close, get_rocm_stream, random_f32_vec};
 use crate::runtime::RocmRuntime;
 
 // ---- Tiny Llama hyperparameters ----
@@ -257,7 +257,7 @@ fn build_candle_ref(input_data: &[f32], weight_data: &[(GraphTensor, Vec<f32>)])
 /// Test a single transformer layer on CUDA against candle CPU reference.
 #[test]
 fn test_mini_transformer_layer() {
-    let Some(stream) = get_cuda_stream() else {
+    let Some(stream) = get_rocm_stream() else {
         println!("CUDA not available, skipping");
         return;
     };
@@ -291,7 +291,7 @@ fn test_mini_transformer_layer() {
 /// Test a two-layer transformer on CUDA against candle CPU reference.
 #[test]
 fn test_mini_transformer_two_layers() {
-    let Some(stream) = get_cuda_stream() else {
+    let Some(stream) = get_rocm_stream() else {
         println!("CUDA not available, skipping");
         return;
     };
@@ -350,7 +350,7 @@ fn test_mini_transformer_two_layers() {
 /// Test the transformer with multiple random data seeds to catch data-dependent bugs.
 #[test]
 fn test_transformer_multi_seed() {
-    let Some(stream) = get_cuda_stream() else {
+    let Some(stream) = get_rocm_stream() else {
         println!("CUDA not available, skipping");
         return;
     };
@@ -384,7 +384,7 @@ fn test_transformer_multi_seed() {
 /// Test just the RMSNorm component on CUDA
 #[test]
 fn test_rms_norm_cuda() {
-    let Some(stream) = get_cuda_stream() else {
+    let Some(stream) = get_rocm_stream() else {
         println!("CUDA not available, skipping");
         return;
     };
@@ -420,7 +420,7 @@ fn test_rms_norm_cuda() {
 /// Test just the self-attention on CUDA
 #[test]
 fn test_self_attention_cuda() {
-    let Some(stream) = get_cuda_stream() else {
+    let Some(stream) = get_rocm_stream() else {
         println!("CUDA not available, skipping");
         return;
     };
@@ -467,7 +467,7 @@ fn test_self_attention_cuda() {
 /// Test just the SwiGLU MLP on CUDA
 #[test]
 fn test_swiglu_mlp_cuda() {
-    let Some(stream) = get_cuda_stream() else {
+    let Some(stream) = get_rocm_stream() else {
         println!("CUDA not available, skipping");
         return;
     };
@@ -518,7 +518,7 @@ fn test_swiglu_mlp_cuda() {
 /// (outside the body) — not a per-iter clone.
 #[test]
 fn test_rolled_chained_scalar_muls() {
-    let Some(stream) = get_cuda_stream() else {
+    let Some(stream) = get_rocm_stream() else {
         return;
     };
     let mut cx = Graph::default();

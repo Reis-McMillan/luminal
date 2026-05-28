@@ -10,7 +10,7 @@
 
 use luminal::prelude::*;
 
-use super::utilities::{assert_close, fuzz_genomes, get_cuda_stream, random_f32_vec};
+use super::utilities::{assert_close, fuzz_genomes, get_rocm_stream, random_f32_vec};
 use crate::runtime::RocmRuntime;
 
 /// Number of genomes to fuzz per test (higher than default GENOME_FUZZ_COUNT=20).
@@ -72,7 +72,7 @@ fn swiglu_mlp_ref(
 
 /// Test a SwiGLU MLP block at given dimensions with genome fuzzing.
 fn fuzz_mlp(seq: usize, hidden: usize, intermediate: usize, seed: u64) {
-    let Some(stream) = get_cuda_stream() else {
+    let Some(stream) = get_rocm_stream() else {
         return;
     };
 
@@ -133,7 +133,7 @@ fn fuzz_mlp(seq: usize, hidden: usize, intermediate: usize, seed: u64) {
 
 /// Test RMSNorm + matmul projection at given dimensions with genome fuzzing.
 fn fuzz_norm_proj(seq: usize, hidden: usize, proj_dim: usize, eps: f32, seed: u64) {
-    let Some(stream) = get_cuda_stream() else {
+    let Some(stream) = get_rocm_stream() else {
         return;
     };
 
@@ -198,7 +198,7 @@ fn fuzz_layer_no_attn(
     eps: f32,
     seed: u64,
 ) {
-    let Some(stream) = get_cuda_stream() else {
+    let Some(stream) = get_rocm_stream() else {
         return;
     };
 
@@ -307,7 +307,7 @@ fn fuzz_layer_no_attn(
 /// Test a SwiGLU MLP with HLIR-only to specifically verify
 /// the HLIR matmul decomposition (elementwise Mul + KernelSumReduce).
 fn fuzz_mlp_hlir_only(seq: usize, hidden: usize, intermediate: usize, seed: u64) {
-    let Some(stream) = get_cuda_stream() else {
+    let Some(stream) = get_rocm_stream() else {
         return;
     };
 
@@ -456,7 +456,7 @@ mod gemma {
     #[test]
     #[ignore = "expensive CUDA model genome fuzzing; run with cargo test -p luminal_cuda_lite -- --ignored"]
     fn fuzz_gemma_layer_full_norms() {
-        let Some(stream) = get_cuda_stream() else {
+        let Some(stream) = get_rocm_stream() else {
             return;
         };
 
@@ -629,7 +629,7 @@ mod qwen {
     #[test]
     #[ignore = "expensive CUDA model genome fuzzing; run with cargo test -p luminal_cuda_lite -- --ignored"]
     fn fuzz_qwen_lm_head() {
-        let Some(stream) = get_cuda_stream() else {
+        let Some(stream) = get_rocm_stream() else {
             return;
         };
 

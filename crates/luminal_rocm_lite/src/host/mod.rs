@@ -20,8 +20,8 @@ pub(crate) type HipblasLtTypeTuple = (
 #[cfg(test)]
 pub(crate) fn hipblaslt_type_tuple(op: &dyn HostOp) -> Option<HipblasLtTypeTuple> {
     op.as_any()
-        .downcast_ref::<cublaslt::CuBlasLt>()
-        .map(cublaslt::CuBlasLt::type_tuple)
+        .downcast_ref::<hipblaslt::HipblasLt>()
+        .map(hipblaslt::HipblasLt::type_tuple)
 }
 
 #[cfg(test)]
@@ -30,15 +30,15 @@ pub(crate) type HipblasLtScaleValues = (f64, f64);
 #[cfg(test)]
 pub(crate) fn hipblaslt_scale_values(op: &dyn HostOp) -> Option<HipblasLtScaleValues> {
     op.as_any()
-        .downcast_ref::<cublaslt::CuBlasLt>()
-        .map(cublaslt::CuBlasLt::scale_values)
+        .downcast_ref::<hipblaslt::HipblasLt>()
+        .map(hipblaslt::HipblasLt::scale_values)
 }
 
 #[cfg(test)]
 pub(crate) fn hipblaslt_epilogue(op: &dyn HostOp) -> Option<&'static str> {
     op.as_any()
-        .downcast_ref::<cublaslt::CuBlasLt>()
-        .map(cublaslt::CuBlasLt::epilogue)
+        .downcast_ref::<hipblaslt::HipblasLt>()
+        .map(hipblaslt::HipblasLt::epilogue)
 }
 
 #[cfg(test)]
@@ -47,25 +47,25 @@ pub(crate) type HipblasLtMatrixOrders = (&'static str, &'static str, &'static st
 #[cfg(test)]
 pub(crate) fn hipblaslt_matrix_orders(op: &dyn HostOp) -> Option<HipblasLtMatrixOrders> {
     op.as_any()
-        .downcast_ref::<cublaslt::CuBlasLt>()
-        .map(cublaslt::CuBlasLt::matrix_orders)
+        .downcast_ref::<hipblaslt::HipblasLt>()
+        .map(hipblaslt::HipblasLt::matrix_orders)
 }
 
 #[cfg(test)]
-pub(crate) type CublasLtTransposeOps = (&'static str, &'static str);
+pub(crate) type HipblasLtTransposeOps = (&'static str, &'static str);
 
 #[cfg(test)]
-pub(crate) fn hipblaslt_transpose_ops(op: &dyn HostOp) -> Option<CublasLtTransposeOps> {
+pub(crate) fn hipblaslt_transpose_ops(op: &dyn HostOp) -> Option<HipblasLtTransposeOps> {
     op.as_any()
-        .downcast_ref::<cublaslt::CuBlasLt>()
-        .map(cublaslt::CuBlasLt::transpose_ops)
+        .downcast_ref::<hipblaslt::HipblasLt>()
+        .map(hipblaslt::HipblasLt::transpose_ops)
 }
 
 #[cfg(test)]
 pub(crate) fn hipblaslt_c_d_layouts_match(op: &dyn HostOp) -> Option<bool> {
     op.as_any()
-        .downcast_ref::<cublaslt::CuBlasLt>()
-        .map(cublaslt::CuBlasLt::c_d_layouts_match)
+        .downcast_ref::<hipblaslt::HipblasLt>()
+        .map(hipblaslt::HipblasLt::c_d_layouts_match)
 }
 
 #[cfg(test)]
@@ -74,13 +74,13 @@ pub(crate) type HipblasLtTensorScaleInputs = (bool, bool);
 #[cfg(test)]
 pub(crate) fn hipblaslt_tensor_scale_inputs(op: &dyn HostOp) -> Option<HipblasLtTensorScaleInputs> {
     op.as_any()
-        .downcast_ref::<cublaslt::CuBlasLt>()
-        .map(cublaslt::CuBlasLt::tensor_scale_inputs)
+        .downcast_ref::<hipblaslt::HipblasLt>()
+        .map(hipblaslt::HipblasLt::tensor_scale_inputs)
 }
 
 /// Non-owning device buffer handle used by host operations.
 ///
-/// Runtime-owned intermediates may be a whole `CudaSlice`, a subregion inside
+/// Runtime-owned intermediates may be a whole `HipSlice`, a subregion inside
 /// the reusable arena, or an external pointer. Host ops only need the pointer
 /// and the logical byte length.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -1,7 +1,7 @@
 use half::bf16;
 use luminal::{dtype::DType, prelude::*, shape::Expression};
 
-use super::utilities::{assert_close, get_cuda_stream, random_f32_vec};
+use super::utilities::{assert_close, get_rocm_stream, random_f32_vec};
 use crate::{
     host::moe::{GLUMoE, GLUMoEMode},
     runtime::RocmRuntime,
@@ -185,7 +185,7 @@ fn glumoe_modes(rt: &RocmRuntime) -> Vec<GLUMoEMode> {
 }
 
 fn run_qwen_moe(use_glumoe: bool) -> (Vec<f32>, Vec<GLUMoEMode>) {
-    let Some(stream) = get_cuda_stream() else {
+    let Some(stream) = get_rocm_stream() else {
         return (vec![], vec![]);
     };
 
@@ -222,7 +222,7 @@ fn run_qwen_moe(use_glumoe: bool) -> (Vec<f32>, Vec<GLUMoEMode>) {
 }
 
 fn run_gemma_moe(use_glumoe: bool) -> (Vec<f32>, Vec<GLUMoEMode>) {
-    let Some(stream) = get_cuda_stream() else {
+    let Some(stream) = get_rocm_stream() else {
         return (vec![], vec![]);
     };
 

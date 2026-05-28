@@ -25,7 +25,7 @@ fn build_dynamic_matmul_graph(k: usize, n: usize) -> (Graph, NodeIndex, NodeInde
 #[test]
 fn test_bucket_dispatch_simple() {
     // Tests that bucketed compilation produces correct results for different dim values
-    let Some(stream) = get_cuda_stream() else {
+    let Some(stream) = get_rocm_stream() else {
         return;
     };
 
@@ -65,7 +65,7 @@ fn test_bucket_dispatch_simple() {
 #[test]
 fn test_bucket_matmul_dynamic() {
     // Tests matmul with bucketed dynamic dim
-    let Some(stream) = get_cuda_stream() else {
+    let Some(stream) = get_rocm_stream() else {
         return;
     };
 
@@ -126,7 +126,7 @@ fn test_bucket_matmul_dynamic() {
 #[test]
 fn test_bucket_results_match_unbucketed() {
     // Tests that bucketed results match non-bucketed results for the same graph
-    let Some(stream) = get_cuda_stream() else {
+    let Some(stream) = get_rocm_stream() else {
         return;
     };
 
@@ -166,7 +166,7 @@ fn test_bucket_results_match_unbucketed() {
 #[test]
 #[should_panic(expected = "No bucket matches")]
 fn test_bucket_out_of_range_panics() {
-    let Some(stream) = get_cuda_stream() else {
+    let Some(stream) = get_rocm_stream() else {
         // Can't trigger panic without GPU, skip gracefully
         panic!("No bucket matches dyn_map");
     };
@@ -190,7 +190,7 @@ fn test_bucket_out_of_range_panics() {
 #[test]
 fn test_bucket_no_buckets_backward_compat() {
     // No buckets set → should behave identically to old path
-    let Some(stream) = get_cuda_stream() else {
+    let Some(stream) = get_rocm_stream() else {
         return;
     };
 
@@ -229,7 +229,7 @@ fn test_bucket_representative_override() {
 #[test]
 fn test_bucket_switch_preserves_weights() {
     // Tests that switching between buckets still sees the correct weight data
-    let Some(stream) = get_cuda_stream() else {
+    let Some(stream) = get_rocm_stream() else {
         return;
     };
 
@@ -291,7 +291,7 @@ fn test_bucket_switch_preserves_weights() {
 #[test]
 fn test_bucket_multiple_executions_same_bucket() {
     // Tests multiple executions within the same bucket with different dim values
-    let Some(stream) = get_cuda_stream() else {
+    let Some(stream) = get_rocm_stream() else {
         return;
     };
 

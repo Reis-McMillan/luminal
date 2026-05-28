@@ -12,7 +12,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use cudarc::driver::{CudaStream, DevicePtr};
+use rocmrc::driver::{HipStream, DevicePtr};
 use luminal::egglog_utils::{hlir_to_egglog, run_egglog};
 use luminal::op::{EgglogOp, IntoEgglogOp};
 use luminal::prelude::*;
@@ -20,7 +20,7 @@ use luminal::prelude::*;
 use crate::host::flashinfer::FlashInferAttention;
 use crate::host::{DeviceBuffer, HostOp};
 use crate::runtime::RocmRuntime;
-use crate::tests::utilities::get_cuda_stream;
+use crate::tests::utilities::get_rocm_stream;
 
 /// Look up an op in `CudaRuntime::Ops::into_vec()` by its egglog sort name.
 fn ops_contains_sort(name: &str) -> bool {
@@ -73,7 +73,7 @@ fn build_attention_graph() -> (Graph, GraphTensor, GraphTensor, GraphTensor, Gra
 }
 
 fn run_reference_attention(
-    stream: &Arc<CudaStream>,
+    stream: &Arc<HipStream>,
     q: &[f32],
     k: &[f32],
     v: &[f32],
@@ -124,12 +124,12 @@ fn transpose_hbd_to_bhd(data: &[f32], heads: usize, batch: usize, dim: usize) ->
     out
 }
 
-fn alloc_dev(stream: &Arc<CudaStream>, bytes: usize) -> cudarc::driver::CudaSlice<u8> {
+fn alloc_dev(stream: &Arc<HipStream>, bytes: usize) -> rocmrc::HipSlice<u8> {
     let bytes = bytes.max(1);
     unsafe { stream.alloc::<u8>(bytes).unwrap() }
 }
 
-fn copy_to_dev<T: Copy>(stream: &Arc<CudaStream>, data: &[T]) -> cudarc::driver::CudaSlice<u8> {
+fn copy_to_dev<T: Copy>(stream: &Arc<HipStream>, data: &[T]) -> rocmrc::HipSlice<u8> {
     let bytes = unsafe {
         std::slice::from_raw_parts(data.as_ptr() as *const u8, std::mem::size_of_val(data))
     };
@@ -139,7 +139,7 @@ fn copy_to_dev<T: Copy>(stream: &Arc<CudaStream>, data: &[T]) -> cudarc::driver:
 /// Run FlashInferAttention.execute() directly and reshape the output to the
 /// reference (batch, heads, dim) layout used by `run_reference_attention`.
 fn run_flashinfer(
-    stream: &Arc<CudaStream>,
+    stream: &Arc<HipStream>,
     q: &[f32],
     k_cache: &[f32],
     v_cache: &[f32],
@@ -205,7 +205,7 @@ fn run_flashinfer(
     // Output is (heads, batch, dim); reshape to (batch, heads, dim).
     let mut out_bytes = vec![0u8; batch_size * HIDDEN * 4];
     unsafe {
-        cudarc::driver::result::memcpy_dtoh_async(&mut out_bytes, out_ptr, stream.cu_stream())
+        rocmrc::driver::result::memcpy_dtoh_async(&mut out_bytes, out_ptr, stream.cu_stream())
             .unwrap();
     }
     stream.synchronize().unwrap();
@@ -289,7 +289,7 @@ fn flashinfer_op_sort_shape() {
 
 #[test]
 fn flashinfer_bs1_ctx4() {
-    let Some(stream) = get_cuda_stream() else {
+    let Some(stream) = get_rocm_stream() else {
         return;
     };
     let batch_size = 1;
@@ -306,7 +306,7 @@ fn flashinfer_bs1_ctx4() {
 
 #[test]
 fn flashinfer_bs2_supersequence() {
-    let Some(stream) = get_cuda_stream() else {
+    let Some(stream) = get_rocm_stream() else {
         return;
     };
     let batch_size = 2;
@@ -346,7 +346,7 @@ fn flashinfer_bs2_supersequence() {
 
 #[test]
 fn flashinfer_noncontiguous_page_table() {
-    let Some(stream) = get_cuda_stream() else {
+    let Some(stream) = get_rocm_stream() else {
         return;
     };
     let batch_size = 1;

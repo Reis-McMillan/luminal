@@ -1,5 +1,5 @@
 use candle_core::{Device, Tensor, WithDType};
-use cudarc::driver::CudaContext;
+use rocmrc::HipContext;
 use half::{bf16, f16};
 use luminal::egglog_utils::{
     EGraphChoiceSet, egglog_to_llir, extract_generation, hash_choice_set, random_initial_choice,
@@ -10,7 +10,7 @@ use num_traits::{Num, Signed};
 use rand::{Rng, SeedableRng, rngs::StdRng};
 use std::sync::Arc;
 
-use crate::runtime::{RocmRuntime, ToCudaInput};
+use crate::runtime::{RocmRuntime, ToRocmInput};
 
 /// Safety factor multiplied with epsilon for tolerance calculations
 pub const TOLERANCE_SAFETY_FACTOR: f32 = 2.0;
@@ -23,7 +23,7 @@ pub const GENOME_FUZZ_COUNT: usize = 20;
 pub trait TestDType:
     Clone + Sized + WithDType + PartialEq + Copy + std::fmt::Debug + 'static
 where
-    Vec<Self>: ToCudaInput,
+    Vec<Self>: ToRocmInput,
 {
     /// The corresponding luminal DType
     const DTYPE: luminal::dtype::DType;
@@ -123,20 +123,20 @@ pub fn assert_close<T: Num + Signed + PartialOrd + Copy + std::fmt::Display>(
     }
 }
 
-pub fn get_cuda_stream() -> Option<Arc<cudarc::driver::CudaStream>> {
-    let ctx = CudaContext::new(0).ok()?;
+pub fn get_rocm_stream() -> Option<Arc<rocmrc::HipStream>> {
+    let ctx = HipContext::new(0).ok()?;
     ctx.bind_to_thread().ok()?;
     Some(ctx.default_stream())
 }
 
 #[derive(Debug, Clone)]
-pub enum CudaFuzzInput {
+pub enum RocmFuzzInput {
     F32(NodeIndex, Vec<f32>),
     Bf16(NodeIndex, Vec<bf16>),
     I32(NodeIndex, Vec<i32>),
 }
 
-impl CudaFuzzInput {
+impl RocmFuzzInput {
     fn apply(&self, rt: &mut RocmRuntime) {
         match self {
             Self::F32(id, data) => rt.set_data(*id, data.clone()),
@@ -186,7 +186,7 @@ pub struct SearchEquivalenceFuzzConfig {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SearchEquivalenceReference {
-    FirstCudaExtraction,
+    FirstRocmExtraction,
     NativeRuntime,
 }
 
@@ -199,7 +199,7 @@ impl Default for SearchEquivalenceFuzzConfig {
             mutations: 2,
             max_attempts: 1_000,
             build_options: BuildSearchSpaceOptions::default(),
-            reference: SearchEquivalenceReference::FirstCudaExtraction,
+            reference: SearchEquivalenceReference::FirstRocmExtraction,
         }
     }
 }
@@ -210,16 +210,16 @@ pub struct SearchEquivalenceFuzzReport {
     pub skipped_invalid: usize,
 }
 
-pub struct CudaSearchEquivalenceFuzzer<'a> {
+pub struct RocmSearchEquivalenceFuzzer<'a> {
     cx: &'a mut Graph,
-    stream: &'a Arc<cudarc::driver::CudaStream>,
-    inputs: Vec<CudaFuzzInput>,
+    stream: &'a Arc<rocmrc::HipStream>,
+    inputs: Vec<RocmFuzzInput>,
     outputs: Vec<F32OutputCheck>,
     config: SearchEquivalenceFuzzConfig,
 }
 
-impl<'a> CudaSearchEquivalenceFuzzer<'a> {
-    pub fn new(cx: &'a mut Graph, stream: &'a Arc<cudarc::driver::CudaStream>) -> Self {
+impl<'a> RocmSearchEquivalenceFuzzer<'a> {
+    pub fn new(cx: &'a mut Graph, stream: &'a Arc<rocmrc::HipStream>) -> Self {
         Self {
             cx,
             stream,
@@ -260,17 +260,17 @@ impl<'a> CudaSearchEquivalenceFuzzer<'a> {
     }
 
     pub fn input_f32(mut self, id: NodeIndex, data: Vec<f32>) -> Self {
-        self.inputs.push(CudaFuzzInput::F32(id, data));
+        self.inputs.push(RocmFuzzInput::F32(id, data));
         self
     }
 
     pub fn input_bf16(mut self, id: NodeIndex, data: Vec<bf16>) -> Self {
-        self.inputs.push(CudaFuzzInput::Bf16(id, data));
+        self.inputs.push(RocmFuzzInput::Bf16(id, data));
         self
     }
 
     pub fn input_i32(mut self, id: NodeIndex, data: Vec<i32>) -> Self {
-        self.inputs.push(CudaFuzzInput::I32(id, data));
+        self.inputs.push(RocmFuzzInput::I32(id, data));
         self
     }
 
@@ -305,8 +305,8 @@ impl<'a> CudaSearchEquivalenceFuzzer<'a> {
 /// catches cases where supposedly equivalent e-graph choices diverge.
 pub fn fuzz_cuda_search_space_equivalence(
     cx: &mut Graph,
-    stream: &Arc<cudarc::driver::CudaStream>,
-    inputs: &[CudaFuzzInput],
+    stream: &Arc<rocmrc::HipStream>,
+    inputs: &[RocmFuzzInput],
     outputs: &[F32OutputCheck],
     config: SearchEquivalenceFuzzConfig,
 ) -> SearchEquivalenceFuzzReport {
@@ -442,8 +442,8 @@ pub fn fuzz_cuda_search_space_equivalence(
 
 fn run_choice_outputs<'a>(
     cx: &'a Graph,
-    stream: &Arc<cudarc::driver::CudaStream>,
-    inputs: &[CudaFuzzInput],
+    stream: &Arc<rocmrc::HipStream>,
+    inputs: &[RocmFuzzInput],
     outputs: &[F32OutputCheck],
     choices: &EGraphChoiceSet<'a>,
 ) -> Result<Vec<Vec<f32>>, String> {
@@ -524,7 +524,7 @@ fn assert_fuzz_outputs_close(
 
 /// Get the GPU compute capability as (major, minor).
 pub fn gpu_compute_cap() -> Option<(i32, i32)> {
-    let ctx = CudaContext::new(0).ok()?;
+    let ctx = HipContext::new(0).ok()?;
     ctx.compute_capability().ok()
 }
 
@@ -576,9 +576,9 @@ pub fn test_unary_cuda<T: TestDType>(
     generator: impl Fn(usize, u64) -> Vec<T>,
     seed: u64,
 ) where
-    Vec<T>: ToCudaInput,
+    Vec<T>: ToRocmInput,
 {
-    let Some(stream) = get_cuda_stream() else {
+    let Some(stream) = get_rocm_stream() else {
         return;
     };
 
@@ -642,9 +642,9 @@ pub fn test_binary_cuda<T: TestDType>(
     rtol: f32,
     atol: f32,
 ) where
-    Vec<T>: ToCudaInput,
+    Vec<T>: ToRocmInput,
 {
-    let Some(stream) = get_cuda_stream() else {
+    let Some(stream) = get_rocm_stream() else {
         return;
     };
 
@@ -711,7 +711,7 @@ pub fn test_mod(
     func: impl Fn(GraphTensor, GraphTensor) -> GraphTensor,
     seed: u64,
 ) {
-    let Some(stream) = get_cuda_stream() else {
+    let Some(stream) = get_rocm_stream() else {
         return;
     };
 
@@ -809,7 +809,7 @@ pub fn gen_slice_range(
 #[allow(clippy::too_many_arguments)]
 pub fn fuzz_genomes<T: TestDType>(
     cx: &Graph,
-    stream: &Arc<cudarc::driver::CudaStream>,
+    stream: &Arc<rocmrc::HipStream>,
     setup_inputs: impl Fn(&mut RocmRuntime),
     output_id: NodeIndex,
     expected: &[T],
@@ -818,7 +818,7 @@ pub fn fuzz_genomes<T: TestDType>(
     num_genomes: usize,
     seed: u64,
 ) where
-    Vec<T>: ToCudaInput,
+    Vec<T>: ToRocmInput,
 {
     let Some(egraph) = cx.egraph() else {
         return;

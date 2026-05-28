@@ -1,4 +1,4 @@
-use cudarc::driver::CudaContext;
+use rocmrc::HipContext;
 use luminal::{graph::Graph, op::Runtime};
 
 use crate::{kernel::apply_rope, runtime::RocmRuntime};
@@ -39,7 +39,7 @@ fn rope_matches_cpu_reference() {
     let cos_data: Vec<f32> = (0..s * d).map(|i| ((i as f32) * 0.017).cos()).collect();
     let sin_data: Vec<f32> = (0..s * d).map(|i| ((i as f32) * 0.017).sin()).collect();
 
-    let ctx = CudaContext::new(0).unwrap();
+    let ctx = HipContext::new(0).unwrap();
     ctx.bind_to_thread().unwrap();
     let stream = ctx.default_stream();
     cx.build_search_space::<RocmRuntime>();
@@ -87,7 +87,7 @@ fn rope_flux2_shape() {
         .map(|_| rng.random_range(-1.0..1.0_f32))
         .collect();
 
-    let ctx = CudaContext::new(0).unwrap();
+    let ctx = HipContext::new(0).unwrap();
     ctx.bind_to_thread().unwrap();
     let stream = ctx.default_stream();
     cx.build_search_space::<RocmRuntime>();

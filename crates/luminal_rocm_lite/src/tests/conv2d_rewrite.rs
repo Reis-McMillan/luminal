@@ -8,7 +8,7 @@ use rand::{SeedableRng, rngs::StdRng};
 
 use crate::{kernel::KernelOp, runtime::RocmRuntime};
 
-use super::utilities::{assert_close, get_cuda_stream};
+use super::utilities::{assert_close, get_rocm_stream};
 
 fn conv2d_bias_hlir(
     x: GraphTensor,
@@ -176,7 +176,7 @@ fn generic_conv2d_rewrite_requires_conv_output_shape() {
 
 #[test]
 fn generic_conv2d_candidate_executes_unfold_matmul_bias() {
-    let Some(stream) = get_cuda_stream() else {
+    let Some(stream) = get_rocm_stream() else {
         return;
     };
 
@@ -217,7 +217,7 @@ fn generic_conv2d_candidate_executes_unfold_matmul_bias() {
 
 #[test]
 fn generic_conv2d_candidate_executes_conv1x1_matmul_bias() {
-    let Some(stream) = get_cuda_stream() else {
+    let Some(stream) = get_rocm_stream() else {
         return;
     };
 
@@ -256,7 +256,7 @@ fn generic_conv2d_candidate_executes_conv1x1_matmul_bias() {
 
 #[test]
 fn generic_conv2d_candidate_executes_padded_unfold_matmul_bias() {
-    let Some(stream) = get_cuda_stream() else {
+    let Some(stream) = get_rocm_stream() else {
         return;
     };
 
@@ -297,7 +297,7 @@ fn generic_conv2d_candidate_executes_padded_unfold_matmul_bias() {
 
 #[test]
 fn generic_conv2d_candidate_executes_upsample_view_input() {
-    let Some(stream) = get_cuda_stream() else {
+    let Some(stream) = get_rocm_stream() else {
         return;
     };
 

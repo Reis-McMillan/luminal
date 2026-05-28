@@ -12,7 +12,7 @@ use half::bf16;
 use luminal::{dtype::DType, prelude::*, shape::Expression};
 use rand::{Rng, SeedableRng, rngs::StdRng};
 
-use super::utilities::{CudaSearchEquivalenceFuzzer, get_cuda_stream, random_f32_vec};
+use super::utilities::{RocmSearchEquivalenceFuzzer, get_rocm_stream, random_f32_vec};
 
 const SEARCH_EQUIV_SAMPLES: usize = 32;
 
@@ -55,7 +55,7 @@ fn gather_experts(
 
 #[test]
 fn llama_architecture_search_space_equivalence_fuzz() {
-    let Some(stream) = get_cuda_stream() else {
+    let Some(stream) = get_rocm_stream() else {
         return;
     };
 
@@ -87,7 +87,7 @@ fn llama_architecture_search_space_equivalence_fuzz() {
     let (logits, cache_outputs) =
         llama.forward(input, q_pos, scatter_idx, gather_idx, attn_mask, &kv_cache);
     let logits = logits.output();
-    let mut fuzzer = CudaSearchEquivalenceFuzzer::new(&mut cx, &stream)
+    let mut fuzzer = RocmSearchEquivalenceFuzzer::new(&mut cx, &stream)
         .seed(0x5EED_1234)
         .samples(SEARCH_EQUIV_SAMPLES)
         .generation_size(8)
@@ -131,7 +131,7 @@ fn llama_architecture_search_space_equivalence_fuzz() {
 
 #[test]
 fn gemma_architecture_search_space_equivalence_fuzz() {
-    let Some(stream) = get_cuda_stream() else {
+    let Some(stream) = get_rocm_stream() else {
         return;
     };
 
@@ -163,7 +163,7 @@ fn gemma_architecture_search_space_equivalence_fuzz() {
     let mlp_normed = rms_norm(mlp_out, post_ff_norm_w, EPS);
     let out = (x + mlp_normed).output();
 
-    let report = CudaSearchEquivalenceFuzzer::new(&mut cx, &stream)
+    let report = RocmSearchEquivalenceFuzzer::new(&mut cx, &stream)
         .seed(0x6E4D_4DAA)
         .samples(SEARCH_EQUIV_SAMPLES)
         .generation_size(8)
@@ -198,7 +198,7 @@ fn gemma_architecture_search_space_equivalence_fuzz() {
 
 #[test]
 fn moe_architecture_search_space_equivalence_fuzz() {
-    let Some(stream) = get_cuda_stream() else {
+    let Some(stream) = get_rocm_stream() else {
         return;
     };
 
@@ -258,7 +258,7 @@ fn moe_architecture_search_space_equivalence_fuzz() {
     let out = (down_out * weights_exp).sum(n - 1).output();
     cx.set_dim('s', SEQ);
 
-    let report = CudaSearchEquivalenceFuzzer::new(&mut cx, &stream)
+    let report = RocmSearchEquivalenceFuzzer::new(&mut cx, &stream)
         .seed(0x0DEE_55EE)
         .samples(SEARCH_EQUIV_SAMPLES)
         .generation_size(8)
@@ -296,7 +296,7 @@ fn moe_architecture_search_space_equivalence_fuzz() {
 
 #[test]
 fn moe_architecture_native_reference_fuzz() {
-    let Some(stream) = get_cuda_stream() else {
+    let Some(stream) = get_rocm_stream() else {
         return;
     };
 
@@ -348,7 +348,7 @@ fn moe_architecture_native_reference_fuzz() {
     let out = (down_out * weights_exp).sum(n - 1).output();
     cx.set_dim('s', SEQ);
 
-    let report = CudaSearchEquivalenceFuzzer::new(&mut cx, &stream)
+    let report = RocmSearchEquivalenceFuzzer::new(&mut cx, &stream)
         .seed(0x51A7_E5ED)
         .samples(SEARCH_EQUIV_SAMPLES)
         .generation_size(8)

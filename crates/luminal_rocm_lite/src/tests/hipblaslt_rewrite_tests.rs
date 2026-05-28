@@ -10,7 +10,7 @@ use rand::{SeedableRng, rngs::StdRng};
 
 use crate::{
     host::{
-        HipblasLtMatrixOrders, HipblasLtScaleValues, CublasLtTransposeOps, HipblasLtTypeTuple, HostOp,
+        HipblasLtMatrixOrders, HipblasLtScaleValues, HipblasLtTransposeOps, HipblasLtTypeTuple, HostOp,
         hipblaslt_c_d_layouts_match, hipblaslt_epilogue, hipblaslt_matrix_orders,
         hipblaslt_scale_values, hipblaslt_tensor_scale_inputs, hipblaslt_transpose_ops,
         hipblaslt_type_tuple,
@@ -18,12 +18,12 @@ use crate::{
     runtime::RocmRuntime,
 };
 
-use super::utilities::{assert_close, get_cuda_stream, gpu_supports_dtype, random_f32_vec};
+use super::utilities::{assert_close, get_rocm_stream, gpu_supports_dtype, random_f32_vec};
 
-// Broad cuBLASLt rewrite coverage is intentionally opt-in: these tests rerun the
+// Broad hipBLASLt rewrite coverage is intentionally opt-in: these tests rerun the
 // egglog optimizer across many layout and epilogue combinations and dominate the
-// serialized CUDA unit-test runtime. Use `cargo test -p luminal_cuda_lite -- --ignored`
-// when changing cuBLASLt rewrites or extraction logic.
+// serialized ROCm unit-test runtime. Use `cargo test -p luminal_rocm_lite -- --ignored`
+// when changing hipBLASLt rewrites or extraction logic.
 
 #[derive(Debug, Clone, Copy)]
 struct LayoutCase {
@@ -303,11 +303,11 @@ fn reference_postop(mut values: Vec<f32>, post: PostOp) -> Vec<f32> {
     values
 }
 
-fn gpu_supports_cublaslt_fp8_launch(dtype: DType) -> bool {
-    gpu_supports_cublaslt_fp8_launch_pair(dtype, dtype)
+fn gpu_supports_hipblaslt_fp8_launch(dtype: DType) -> bool {
+    gpu_supports_hipblaslt_fp8_launch_pair(dtype, dtype)
 }
 
-fn gpu_supports_cublaslt_fp8_launch_pair(a_dtype: DType, b_dtype: DType) -> bool {
+fn gpu_supports_hipblaslt_fp8_launch_pair(a_dtype: DType, b_dtype: DType) -> bool {
     gpu_supports_dtype(a_dtype)
         && gpu_supports_dtype(b_dtype)
         && matches!(
@@ -318,25 +318,25 @@ fn gpu_supports_cublaslt_fp8_launch_pair(a_dtype: DType, b_dtype: DType) -> bool
         )
 }
 
-const CUBLASLT_FP8_F32_PAIRS: [(DType, DType); 3] = [
+const HIPBLASLT_FP8_F32_PAIRS: [(DType, DType); 3] = [
     (DType::F8E4M3, DType::F8E4M3),
     (DType::F8E4M3, DType::F8E5M2),
     (DType::F8E5M2, DType::F8E4M3),
 ];
 
 #[test]
-#[ignore = "expensive CUDA rewrite sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_rewrites_cover_2d_layout_pairs() {
+#[ignore = "expensive ROCm rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_rewrites_cover_2d_layout_pairs() {
     for case in LAYOUT_CASES {
-        assert_cublaslt_rewrite(build_2d_matmul_graph(case, DType::F32), case.name, |_| true);
+        assert_hipblaslt_rewrite(build_2d_matmul_graph(case, DType::F32), case.name, |_| true);
     }
 }
 
 #[test]
-#[ignore = "expensive CUDA rewrite sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_rewrites_cover_batched_layout_pairs() {
+#[ignore = "expensive ROCm rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_rewrites_cover_batched_layout_pairs() {
     for case in LAYOUT_CASES {
-        assert_cublaslt_rewrite(
+        assert_hipblaslt_rewrite(
             build_batched_matmul_graph(case, DType::F32),
             case.name,
             |_| true,
@@ -345,7 +345,7 @@ fn cublaslt_rewrites_cover_batched_layout_pairs() {
 }
 
 #[test]
-fn cublaslt_rewrites_preserve_explicit_same_type_tuple() {
+fn hipblaslt_rewrites_preserve_explicit_same_type_tuple() {
     for (dtype, compute_type, scale_dtype) in [
         (DType::F32, "32F", DType::F32),
         (DType::F16, "32F", DType::F32),
@@ -359,9 +359,9 @@ fn cublaslt_rewrites_preserve_explicit_same_type_tuple() {
             },
             dtype,
         );
-        let llir = extract_forced_cublaslt_llir(cx, &format!("row-major x row-major {dtype:?}"));
+        let llir = extract_forced_hipblaslt_llir(cx, &format!("row-major x row-major {dtype:?}"));
         assert_eq!(
-            cublaslt_type_tuples(&llir),
+            hipblaslt_type_tuples(&llir),
             vec![(dtype, dtype, dtype, dtype, compute_type, scale_dtype)],
             "current rewrites should emit explicit A/B/C/D plus default compute/scale types for {dtype:?}"
         );
@@ -369,7 +369,7 @@ fn cublaslt_rewrites_preserve_explicit_same_type_tuple() {
 }
 
 #[test]
-fn cublaslt_rewrites_emit_default_scale_values() {
+fn hipblaslt_rewrites_emit_default_scale_values() {
     let cx = build_2d_matmul_graph(
         LayoutCase {
             name: "default alpha beta",
@@ -378,16 +378,16 @@ fn cublaslt_rewrites_emit_default_scale_values() {
         },
         DType::F32,
     );
-    let llir = extract_forced_cublaslt_llir(cx, "default alpha beta");
+    let llir = extract_forced_hipblaslt_llir(cx, "default alpha beta");
     assert_eq!(
-        cublaslt_scale_value_tuples(&llir),
+        hipblaslt_scale_value_tuples(&llir),
         vec![(1.0, 0.0)],
         "current rewrites should emit alpha=1 and beta=0"
     );
 }
 
 #[test]
-fn cublaslt_rewrites_emit_default_epilogue() {
+fn hipblaslt_rewrites_emit_default_epilogue() {
     let cx = build_2d_matmul_graph(
         LayoutCase {
             name: "default epilogue",
@@ -396,18 +396,18 @@ fn cublaslt_rewrites_emit_default_epilogue() {
         },
         DType::F32,
     );
-    let llir = extract_forced_cublaslt_llir(cx, "default epilogue");
+    let llir = extract_forced_hipblaslt_llir(cx, "default epilogue");
     assert_eq!(
-        cublaslt_epilogues(&llir),
+        hipblaslt_epilogues(&llir),
         vec!["DEFAULT"],
-        "base rewrites should emit the default cuBLASLt epilogue"
+        "base rewrites should emit the default hipBLASLt epilogue"
     );
 }
 
 #[test]
-fn cublaslt_rewrites_emit_default_matrix_orders() {
+fn hipblaslt_rewrites_emit_default_matrix_orders() {
     let col_orders = ("COL", "COL", "COL", "COL");
-    assert_cublaslt_rewrite(
+    assert_hipblaslt_rewrite(
         build_2d_matmul_graph(
             LayoutCase {
                 name: "default matrix orders",
@@ -417,56 +417,56 @@ fn cublaslt_rewrites_emit_default_matrix_orders() {
             DType::F32,
         ),
         "default matrix orders",
-        |llir| cublaslt_matrix_order_tuples(llir) == vec![col_orders],
+        |llir| hipblaslt_matrix_order_tuples(llir) == vec![col_orders],
     );
 }
 
 #[test]
-#[ignore = "expensive CUDA rewrite sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_rewrites_cover_2d_row_order_layout_pairs() {
+#[ignore = "expensive ROCm rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_rewrites_cover_2d_row_order_layout_pairs() {
     for case in LAYOUT_CASES {
         let expected_orders = row_order_tuple(case);
-        assert_cublaslt_rewrite(build_2d_matmul_graph(case, DType::F32), case.name, |llir| {
-            cublaslt_matrix_order_tuples(llir).contains(&expected_orders)
+        assert_hipblaslt_rewrite(build_2d_matmul_graph(case, DType::F32), case.name, |llir| {
+            hipblaslt_matrix_order_tuples(llir).contains(&expected_orders)
         });
     }
 }
 
 #[test]
-#[ignore = "expensive CUDA rewrite sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_rewrites_cover_batched_row_order_layout_pairs() {
+#[ignore = "expensive ROCm rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_rewrites_cover_batched_row_order_layout_pairs() {
     for case in LAYOUT_CASES {
         let expected_orders = row_order_tuple(case);
-        assert_cublaslt_rewrite(
+        assert_hipblaslt_rewrite(
             build_batched_matmul_graph(case, DType::F32),
             case.name,
-            |llir| cublaslt_matrix_order_tuples(llir).contains(&expected_orders),
+            |llir| hipblaslt_matrix_order_tuples(llir).contains(&expected_orders),
         );
     }
 }
 
 #[test]
-fn cublaslt_rewrites_cover_flux2_qk_transposed_matmul() {
+fn hipblaslt_rewrites_cover_flux2_qk_transposed_matmul() {
     let mut cx = Graph::new();
     let q = cx.tensor((8usize, 4usize));
     let k = cx.tensor((8usize, 4usize));
     let _out = q.matmul(k.t()).output();
 
-    assert_cublaslt_rewrite(cx, "flux2 q @ k.t()", |llir| {
-        cublaslt_matrix_order_tuples(llir).contains(&("ROW", "COL", "ROW", "ROW"))
-            || cublaslt_matrix_order_tuples(llir).contains(&("COL", "COL", "COL", "COL"))
+    assert_hipblaslt_rewrite(cx, "flux2 q @ k.t()", |llir| {
+        hipblaslt_matrix_order_tuples(llir).contains(&("ROW", "COL", "ROW", "ROW"))
+            || hipblaslt_matrix_order_tuples(llir).contains(&("COL", "COL", "COL", "COL"))
     });
 }
 
 #[test]
-fn cublaslt_rewrites_cover_flux2_linear_bias_epilogue() {
+fn hipblaslt_rewrites_cover_flux2_linear_bias_epilogue() {
     let mut cx = Graph::new();
     let x = cx.tensor((8usize, 4usize));
     let weight = cx.tensor((6usize, 4usize));
     let bias = cx.tensor(6usize);
     let _out = (x.matmul(weight.t()) + bias.expand_dim(0, 8usize)).output();
 
-    assert_cublaslt_epilogue_rewrite(
+    assert_hipblaslt_epilogue_rewrite(
         cx,
         "flux2 x @ weight.t() + bias",
         "BIAS",
@@ -475,7 +475,7 @@ fn cublaslt_rewrites_cover_flux2_linear_bias_epilogue() {
 }
 
 #[test]
-fn cublaslt_cleanup_prunes_flux2_broadcast_mul_fallback() {
+fn hipblaslt_cleanup_prunes_flux2_broadcast_mul_fallback() {
     let mut cx = Graph::new();
     let q = cx.tensor((8usize, 4usize));
     let k = cx.tensor((8usize, 4usize));
@@ -484,22 +484,22 @@ fn cublaslt_cleanup_prunes_flux2_broadcast_mul_fallback() {
     cx.build_search_space::<RocmRuntime>();
     let egraph = cx.egraph().expect("search space should have an e-graph");
     assert!(
-        !cublaslt_ir_nodes(egraph).is_empty(),
-        "Flux2 q @ k.t() should have at least one cuBLASLt candidate"
+        !hipblaslt_ir_nodes(egraph).is_empty(),
+        "Flux2 q @ k.t() should have at least one hipBLASLt candidate"
     );
     assert!(
         op_ir_nodes(egraph, "Mul").is_empty(),
-        "cuBLASLt cleanup should prune the broadcast Mul fallback once a cuBLASLt candidate exists"
+        "hipBLASLt cleanup should prune the broadcast Mul fallback once a hipBLASLt candidate exists"
     );
 }
 
 #[test]
-fn cublaslt_rewrites_keep_c_and_d_layouts_equal_initially() {
+fn hipblaslt_rewrites_keep_c_and_d_layouts_equal_initially() {
     for case in LAYOUT_CASES {
         let cx = build_batched_matmul_graph(case, DType::F32);
-        let llir = extract_forced_cublaslt_llir(cx, case.name);
+        let llir = extract_forced_hipblaslt_llir(cx, case.name);
         assert_eq!(
-            cublaslt_c_d_layout_matches(&llir),
+            hipblaslt_c_d_layout_matches(&llir),
             vec![true],
             "current rewrites should emit identical C and D ld/stride for {}",
             case.name
@@ -508,248 +508,248 @@ fn cublaslt_rewrites_keep_c_and_d_layouts_equal_initially() {
 }
 
 #[test]
-#[ignore = "expensive CUDA rewrite sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_rewrites_cover_2d_matmul_plus_c_beta_one() {
+#[ignore = "expensive ROCm rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_rewrites_cover_2d_matmul_plus_c_beta_one() {
     for case in LAYOUT_CASES {
         let cx = build_2d_matmul_plus_c_graph(case, DType::F32, false);
-        assert_cublaslt_rewrite(cx, case.name, |llir| {
-            cublaslt_scale_value_tuples(llir).contains(&(1.0, 1.0))
-                && cublaslt_c_d_layout_matches(llir).contains(&true)
+        assert_hipblaslt_rewrite(cx, case.name, |llir| {
+            hipblaslt_scale_value_tuples(llir).contains(&(1.0, 1.0))
+                && hipblaslt_c_d_layout_matches(llir).contains(&true)
         });
     }
 }
 
 #[test]
-#[ignore = "expensive CUDA rewrite sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_rewrites_cover_2d_c_plus_matmul_beta_one() {
+#[ignore = "expensive ROCm rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_rewrites_cover_2d_c_plus_matmul_beta_one() {
     for case in LAYOUT_CASES {
-        assert_cublaslt_rewrite(
+        assert_hipblaslt_rewrite(
             build_2d_matmul_plus_c_graph(case, DType::F32, true),
             case.name,
-            |llir| cublaslt_scale_value_tuples(llir).contains(&(1.0, 1.0)),
+            |llir| hipblaslt_scale_value_tuples(llir).contains(&(1.0, 1.0)),
         );
     }
 }
 
 #[test]
-#[ignore = "expensive CUDA rewrite sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_rewrites_cover_batched_matmul_plus_c_beta_one() {
+#[ignore = "expensive ROCm rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_rewrites_cover_batched_matmul_plus_c_beta_one() {
     for case in LAYOUT_CASES {
-        assert_cublaslt_rewrite(
+        assert_hipblaslt_rewrite(
             build_batched_matmul_plus_c_graph(case, DType::F32, false),
             case.name,
-            |llir| cublaslt_scale_value_tuples(llir).contains(&(1.0, 1.0)),
+            |llir| hipblaslt_scale_value_tuples(llir).contains(&(1.0, 1.0)),
         );
     }
 }
 
 #[test]
-#[ignore = "expensive CUDA rewrite sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_rewrites_cover_batched_c_plus_matmul_beta_one() {
+#[ignore = "expensive ROCm rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_rewrites_cover_batched_c_plus_matmul_beta_one() {
     for case in LAYOUT_CASES {
-        assert_cublaslt_rewrite(
+        assert_hipblaslt_rewrite(
             build_batched_matmul_plus_c_graph(case, DType::F32, true),
             case.name,
-            |llir| cublaslt_scale_value_tuples(llir).contains(&(1.0, 1.0)),
+            |llir| hipblaslt_scale_value_tuples(llir).contains(&(1.0, 1.0)),
         );
     }
 }
 
 #[test]
-#[ignore = "expensive CUDA rewrite sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_rewrites_cover_2d_row_order_matmul_plus_c_beta_one() {
+#[ignore = "expensive ROCm rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_rewrites_cover_2d_row_order_matmul_plus_c_beta_one() {
     for case in LAYOUT_CASES {
         let expected_orders = row_order_tuple(case);
-        assert_cublaslt_rewrite(
+        assert_hipblaslt_rewrite(
             build_2d_matmul_plus_c_graph(case, DType::F32, false),
             case.name,
             |llir| {
-                cublaslt_scale_value_tuples(llir).contains(&(1.0, 1.0))
-                    && cublaslt_matrix_order_tuples(llir).contains(&expected_orders)
+                hipblaslt_scale_value_tuples(llir).contains(&(1.0, 1.0))
+                    && hipblaslt_matrix_order_tuples(llir).contains(&expected_orders)
             },
         );
     }
 }
 
 #[test]
-#[ignore = "expensive CUDA rewrite sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_rewrites_cover_2d_row_order_c_plus_matmul_beta_one() {
+#[ignore = "expensive ROCm rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_rewrites_cover_2d_row_order_c_plus_matmul_beta_one() {
     for case in LAYOUT_CASES {
         let expected_orders = row_order_tuple(case);
-        assert_cublaslt_rewrite(
+        assert_hipblaslt_rewrite(
             build_2d_matmul_plus_c_graph(case, DType::F32, true),
             case.name,
             |llir| {
-                cublaslt_scale_value_tuples(llir).contains(&(1.0, 1.0))
-                    && cublaslt_matrix_order_tuples(llir).contains(&expected_orders)
+                hipblaslt_scale_value_tuples(llir).contains(&(1.0, 1.0))
+                    && hipblaslt_matrix_order_tuples(llir).contains(&expected_orders)
             },
         );
     }
 }
 
 #[test]
-#[ignore = "expensive CUDA rewrite sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_rewrites_cover_batched_row_order_matmul_plus_c_beta_one() {
+#[ignore = "expensive ROCm rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_rewrites_cover_batched_row_order_matmul_plus_c_beta_one() {
     for case in LAYOUT_CASES {
         let expected_orders = row_order_tuple(case);
-        assert_cublaslt_rewrite(
+        assert_hipblaslt_rewrite(
             build_batched_matmul_plus_c_graph(case, DType::F32, false),
             case.name,
             |llir| {
-                cublaslt_scale_value_tuples(llir).contains(&(1.0, 1.0))
-                    && cublaslt_matrix_order_tuples(llir).contains(&expected_orders)
+                hipblaslt_scale_value_tuples(llir).contains(&(1.0, 1.0))
+                    && hipblaslt_matrix_order_tuples(llir).contains(&expected_orders)
             },
         );
     }
 }
 
 #[test]
-#[ignore = "expensive CUDA rewrite sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_rewrites_cover_batched_row_order_c_plus_matmul_beta_one() {
+#[ignore = "expensive ROCm rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_rewrites_cover_batched_row_order_c_plus_matmul_beta_one() {
     for case in LAYOUT_CASES {
         let expected_orders = row_order_tuple(case);
-        assert_cublaslt_rewrite(
+        assert_hipblaslt_rewrite(
             build_batched_matmul_plus_c_graph(case, DType::F32, true),
             case.name,
             |llir| {
-                cublaslt_scale_value_tuples(llir).contains(&(1.0, 1.0))
-                    && cublaslt_matrix_order_tuples(llir).contains(&expected_orders)
+                hipblaslt_scale_value_tuples(llir).contains(&(1.0, 1.0))
+                    && hipblaslt_matrix_order_tuples(llir).contains(&expected_orders)
             },
         );
     }
 }
 
 #[test]
-#[ignore = "expensive CUDA rewrite sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_rewrites_cover_2d_matmul_plus_sliced_c_beta_one() {
+#[ignore = "expensive ROCm rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_rewrites_cover_2d_matmul_plus_sliced_c_beta_one() {
     for case in LAYOUT_CASES {
-        assert_cublaslt_rewrite(
+        assert_hipblaslt_rewrite(
             build_2d_matmul_plus_sliced_c_graph(case, DType::F32, false),
             case.name,
             |llir| {
-                cublaslt_scale_value_tuples(llir).contains(&(1.0, 1.0))
-                    && cublaslt_c_d_layout_matches(llir).contains(&false)
+                hipblaslt_scale_value_tuples(llir).contains(&(1.0, 1.0))
+                    && hipblaslt_c_d_layout_matches(llir).contains(&false)
             },
         );
     }
 }
 
 #[test]
-#[ignore = "expensive CUDA rewrite sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_rewrites_cover_2d_sliced_c_plus_matmul_beta_one() {
+#[ignore = "expensive ROCm rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_rewrites_cover_2d_sliced_c_plus_matmul_beta_one() {
     for case in LAYOUT_CASES {
-        assert_cublaslt_rewrite(
+        assert_hipblaslt_rewrite(
             build_2d_matmul_plus_sliced_c_graph(case, DType::F32, true),
             case.name,
             |llir| {
-                cublaslt_scale_value_tuples(llir).contains(&(1.0, 1.0))
-                    && cublaslt_c_d_layout_matches(llir).contains(&false)
+                hipblaslt_scale_value_tuples(llir).contains(&(1.0, 1.0))
+                    && hipblaslt_c_d_layout_matches(llir).contains(&false)
             },
         );
     }
 }
 
 #[test]
-#[ignore = "expensive CUDA rewrite sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_rewrites_cover_batched_matmul_plus_sliced_c_beta_one() {
+#[ignore = "expensive ROCm rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_rewrites_cover_batched_matmul_plus_sliced_c_beta_one() {
     for case in LAYOUT_CASES {
-        assert_cublaslt_rewrite(
+        assert_hipblaslt_rewrite(
             build_batched_matmul_plus_sliced_c_graph(case, DType::F32, false),
             case.name,
             |llir| {
-                cublaslt_scale_value_tuples(llir).contains(&(1.0, 1.0))
-                    && cublaslt_c_d_layout_matches(llir).contains(&false)
+                hipblaslt_scale_value_tuples(llir).contains(&(1.0, 1.0))
+                    && hipblaslt_c_d_layout_matches(llir).contains(&false)
             },
         );
     }
 }
 
 #[test]
-#[ignore = "expensive CUDA rewrite sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_rewrites_cover_batched_sliced_c_plus_matmul_beta_one() {
+#[ignore = "expensive ROCm rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_rewrites_cover_batched_sliced_c_plus_matmul_beta_one() {
     for case in LAYOUT_CASES {
-        assert_cublaslt_rewrite(
+        assert_hipblaslt_rewrite(
             build_batched_matmul_plus_sliced_c_graph(case, DType::F32, true),
             case.name,
             |llir| {
-                cublaslt_scale_value_tuples(llir).contains(&(1.0, 1.0))
-                    && cublaslt_c_d_layout_matches(llir).contains(&false)
+                hipblaslt_scale_value_tuples(llir).contains(&(1.0, 1.0))
+                    && hipblaslt_c_d_layout_matches(llir).contains(&false)
             },
         );
     }
 }
 
 #[test]
-#[ignore = "expensive CUDA rewrite sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_rewrites_cover_2d_row_order_matmul_plus_sliced_c_beta_one() {
+#[ignore = "expensive ROCm rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_rewrites_cover_2d_row_order_matmul_plus_sliced_c_beta_one() {
     for case in LAYOUT_CASES {
         let expected_orders = row_order_tuple(case);
-        assert_cublaslt_rewrite(
+        assert_hipblaslt_rewrite(
             build_2d_matmul_plus_sliced_c_graph(case, DType::F32, false),
             case.name,
             |llir| {
-                cublaslt_scale_value_tuples(llir).contains(&(1.0, 1.0))
-                    && cublaslt_matrix_order_tuples(llir).contains(&expected_orders)
-                    && cublaslt_c_d_layout_matches(llir).contains(&false)
+                hipblaslt_scale_value_tuples(llir).contains(&(1.0, 1.0))
+                    && hipblaslt_matrix_order_tuples(llir).contains(&expected_orders)
+                    && hipblaslt_c_d_layout_matches(llir).contains(&false)
             },
         );
     }
 }
 
 #[test]
-#[ignore = "expensive CUDA rewrite sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_rewrites_cover_batched_row_order_matmul_plus_sliced_c_beta_one() {
+#[ignore = "expensive ROCm rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_rewrites_cover_batched_row_order_matmul_plus_sliced_c_beta_one() {
     for case in LAYOUT_CASES {
         let expected_orders = row_order_tuple(case);
-        assert_cublaslt_rewrite(
+        assert_hipblaslt_rewrite(
             build_batched_matmul_plus_sliced_c_graph(case, DType::F32, false),
             case.name,
             |llir| {
-                cublaslt_scale_value_tuples(llir).contains(&(1.0, 1.0))
-                    && cublaslt_matrix_order_tuples(llir).contains(&expected_orders)
-                    && cublaslt_c_d_layout_matches(llir).contains(&false)
+                hipblaslt_scale_value_tuples(llir).contains(&(1.0, 1.0))
+                    && hipblaslt_matrix_order_tuples(llir).contains(&expected_orders)
+                    && hipblaslt_c_d_layout_matches(llir).contains(&false)
             },
         );
     }
 }
 
 #[test]
-#[ignore = "expensive CUDA negative rewrite sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_rewrites_do_not_fuse_2d_transposed_c_beta_one() {
+#[ignore = "expensive ROCm negative rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_rewrites_do_not_fuse_2d_transposed_c_beta_one() {
     for case in LAYOUT_CASES {
         for commuted in [false, true] {
             let mut cx = build_2d_matmul_plus_transposed_c_graph(case, DType::F32, commuted);
-            assert_no_forced_cublaslt_llir_where(&mut cx, case.name, |llir| {
-                cublaslt_scale_value_tuples(llir).contains(&(1.0, 1.0))
+            assert_no_forced_hipblaslt_llir_where(&mut cx, case.name, |llir| {
+                hipblaslt_scale_value_tuples(llir).contains(&(1.0, 1.0))
             });
         }
     }
 }
 
 #[test]
-#[ignore = "expensive CUDA negative rewrite sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_rewrites_do_not_fuse_batched_transposed_c_beta_one() {
+#[ignore = "expensive ROCm negative rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_rewrites_do_not_fuse_batched_transposed_c_beta_one() {
     for case in LAYOUT_CASES {
         for commuted in [false, true] {
             let mut cx = build_batched_matmul_plus_transposed_c_graph(case, DType::F32, commuted);
-            assert_no_forced_cublaslt_llir_where(&mut cx, case.name, |llir| {
-                cublaslt_scale_value_tuples(llir).contains(&(1.0, 1.0))
+            assert_no_forced_hipblaslt_llir_where(&mut cx, case.name, |llir| {
+                hipblaslt_scale_value_tuples(llir).contains(&(1.0, 1.0))
             });
         }
     }
 }
 
 #[test]
-#[ignore = "expensive CUDA rewrite sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_rewrites_cover_2d_matmul_plus_offset_c_beta_one() {
+#[ignore = "expensive ROCm rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_rewrites_cover_2d_matmul_plus_offset_c_beta_one() {
     for case in LAYOUT_CASES {
         for commuted in [false, true] {
-            assert_cublaslt_rewrite(
+            assert_hipblaslt_rewrite(
                 build_2d_matmul_plus_offset_c_graph(case, DType::F32, commuted),
                 case.name,
                 |llir| {
-                    cublaslt_scale_value_tuples(llir).contains(&(1.0, 1.0))
-                        && cublaslt_c_d_layout_matches(llir).contains(&true)
+                    hipblaslt_scale_value_tuples(llir).contains(&(1.0, 1.0))
+                        && hipblaslt_c_d_layout_matches(llir).contains(&true)
                 },
             );
         }
@@ -757,16 +757,16 @@ fn cublaslt_rewrites_cover_2d_matmul_plus_offset_c_beta_one() {
 }
 
 #[test]
-#[ignore = "expensive CUDA rewrite sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_rewrites_cover_batched_matmul_plus_offset_c_beta_one() {
+#[ignore = "expensive ROCm rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_rewrites_cover_batched_matmul_plus_offset_c_beta_one() {
     for case in LAYOUT_CASES {
         for commuted in [false, true] {
-            assert_cublaslt_rewrite(
+            assert_hipblaslt_rewrite(
                 build_batched_matmul_plus_offset_c_graph(case, DType::F32, commuted),
                 case.name,
                 |llir| {
-                    cublaslt_scale_value_tuples(llir).contains(&(1.0, 1.0))
-                        && cublaslt_c_d_layout_matches(llir).contains(&true)
+                    hipblaslt_scale_value_tuples(llir).contains(&(1.0, 1.0))
+                        && hipblaslt_c_d_layout_matches(llir).contains(&true)
                 },
             );
         }
@@ -774,17 +774,17 @@ fn cublaslt_rewrites_cover_batched_matmul_plus_offset_c_beta_one() {
 }
 
 #[test]
-#[ignore = "expensive CUDA rewrite sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_rewrites_cover_2d_scaled_alpha_beta() {
+#[ignore = "expensive ROCm rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_rewrites_cover_2d_scaled_alpha_beta() {
     for case in LAYOUT_CASES {
         for commuted in [false, true] {
             let expected_orders = row_order_tuple(case);
-            assert_cublaslt_rewrite(
+            assert_hipblaslt_rewrite(
                 build_2d_scaled_alpha_beta_graph(case, DType::F32, commuted),
                 case.name,
                 |llir| {
-                    cublaslt_scale_value_tuples(llir).contains(&(1.5, 0.5))
-                        && cublaslt_matrix_order_tuples(llir).contains(&expected_orders)
+                    hipblaslt_scale_value_tuples(llir).contains(&(1.5, 0.5))
+                        && hipblaslt_matrix_order_tuples(llir).contains(&expected_orders)
                 },
             );
         }
@@ -792,8 +792,8 @@ fn cublaslt_rewrites_cover_2d_scaled_alpha_beta() {
 }
 
 #[test]
-#[ignore = "expensive CUDA rewrite sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_rewrites_cover_batched_scaled_alpha_beta() {
+#[ignore = "expensive ROCm rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_rewrites_cover_batched_scaled_alpha_beta() {
     for commuted in [false, true] {
         let case = LayoutCase {
             name: "batched row-major scaled alpha beta",
@@ -801,20 +801,20 @@ fn cublaslt_rewrites_cover_batched_scaled_alpha_beta() {
             b_col_major: false,
         };
         let expected_orders = row_order_tuple(case);
-        assert_cublaslt_rewrite(
+        assert_hipblaslt_rewrite(
             build_batched_scaled_alpha_beta_graph(case, DType::F32, commuted),
             case.name,
             |llir| {
-                cublaslt_scale_value_tuples(llir).contains(&(1.5, 0.5))
-                    && cublaslt_matrix_order_tuples(llir).contains(&expected_orders)
+                hipblaslt_scale_value_tuples(llir).contains(&(1.5, 0.5))
+                    && hipblaslt_matrix_order_tuples(llir).contains(&expected_orders)
             },
         );
     }
 }
 
 #[test]
-#[ignore = "expensive CUDA rewrite sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_rewrites_cover_mixed_low_precision_inputs_f32_output_and_c() {
+#[ignore = "expensive ROCm rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_rewrites_cover_mixed_low_precision_inputs_f32_output_and_c() {
     for (dtype, compute_type) in [(DType::F16, "32F"), (DType::Bf16, "32F_FAST_16BF")] {
         let expected_tuple = (
             dtype,
@@ -824,7 +824,7 @@ fn cublaslt_rewrites_cover_mixed_low_precision_inputs_f32_output_and_c() {
             compute_type,
             DType::F32,
         );
-        assert_cublaslt_rewrite(
+        assert_hipblaslt_rewrite(
             build_2d_cast_matmul_plus_c_graph(
                 LayoutCase {
                     name: "mixed dtype row-major",
@@ -837,16 +837,16 @@ fn cublaslt_rewrites_cover_mixed_low_precision_inputs_f32_output_and_c() {
             ),
             "mixed dtype f32 output",
             |llir| {
-                cublaslt_type_tuples(llir).contains(&expected_tuple)
-                    && cublaslt_scale_value_tuples(llir).contains(&(1.0, 1.0))
+                hipblaslt_type_tuples(llir).contains(&expected_tuple)
+                    && hipblaslt_scale_value_tuples(llir).contains(&(1.0, 1.0))
             },
         );
     }
 }
 
 #[test]
-#[ignore = "expensive CUDA rewrite sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_rewrites_cover_batched_mixed_low_precision_inputs_f32_output_and_c() {
+#[ignore = "expensive ROCm rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_rewrites_cover_batched_mixed_low_precision_inputs_f32_output_and_c() {
     for (dtype, compute_type) in [(DType::F16, "32F"), (DType::Bf16, "32F_FAST_16BF")] {
         let expected_tuple = (
             dtype,
@@ -856,7 +856,7 @@ fn cublaslt_rewrites_cover_batched_mixed_low_precision_inputs_f32_output_and_c()
             compute_type,
             DType::F32,
         );
-        assert_cublaslt_rewrite(
+        assert_hipblaslt_rewrite(
             build_batched_cast_matmul_plus_c_graph(
                 LayoutCase {
                     name: "batched mixed dtype row-major",
@@ -869,43 +869,43 @@ fn cublaslt_rewrites_cover_batched_mixed_low_precision_inputs_f32_output_and_c()
             ),
             "batched mixed dtype f32 output",
             |llir| {
-                cublaslt_type_tuples(llir).contains(&expected_tuple)
-                    && cublaslt_scale_value_tuples(llir).contains(&(1.0, 1.0))
+                hipblaslt_type_tuples(llir).contains(&expected_tuple)
+                    && hipblaslt_scale_value_tuples(llir).contains(&(1.0, 1.0))
             },
         );
     }
 }
 
 #[test]
-#[ignore = "expensive CUDA FP8 rewrite sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_fp8_supported_pairs_execute_2d_matmul_f32_output() {
-    for (a_dtype, b_dtype) in CUBLASLT_FP8_F32_PAIRS {
-        cublaslt_fp8_candidate_executes_2d_matmul_f32_output(a_dtype, b_dtype);
+#[ignore = "expensive ROCm FP8 rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_fp8_supported_pairs_execute_2d_matmul_f32_output() {
+    for (a_dtype, b_dtype) in HIPBLASLT_FP8_F32_PAIRS {
+        hipblaslt_fp8_candidate_executes_2d_matmul_f32_output(a_dtype, b_dtype);
     }
 }
 
 #[test]
-#[ignore = "expensive CUDA FP8 rewrite sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_fp8_supported_pairs_execute_batched_matmul_f32_output() {
-    for (a_dtype, b_dtype) in CUBLASLT_FP8_F32_PAIRS {
-        cublaslt_fp8_candidate_executes_batched_matmul_f32_output(a_dtype, b_dtype);
+#[ignore = "expensive ROCm FP8 rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_fp8_supported_pairs_execute_batched_matmul_f32_output() {
+    for (a_dtype, b_dtype) in HIPBLASLT_FP8_F32_PAIRS {
+        hipblaslt_fp8_candidate_executes_batched_matmul_f32_output(a_dtype, b_dtype);
     }
 }
 
 #[test]
-#[ignore = "expensive CUDA FP8 rewrite sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_fp8_e5m2_same_type_does_not_match_f32_output() {
-    cublaslt_fp8_same_type_does_not_match_2d_matmul_f32_output(DType::F8E5M2);
-    cublaslt_fp8_same_type_does_not_match_batched_matmul_f32_output(DType::F8E5M2);
+#[ignore = "expensive ROCm FP8 rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_fp8_e5m2_same_type_does_not_match_f32_output() {
+    hipblaslt_fp8_same_type_does_not_match_2d_matmul_f32_output(DType::F8E5M2);
+    hipblaslt_fp8_same_type_does_not_match_batched_matmul_f32_output(DType::F8E5M2);
 }
 
 #[test]
-#[ignore = "expensive CUDA functional candidate sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_fp8_e4m3_beta_candidate_executes_2d_matmul_plus_f32_c() {
-    let Some(stream) = get_cuda_stream() else {
+#[ignore = "expensive ROCm functional candidate sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_fp8_e4m3_beta_candidate_executes_2d_matmul_plus_f32_c() {
+    let Some(stream) = get_rocm_stream() else {
         return;
     };
-    if !gpu_supports_cublaslt_fp8_launch(DType::F8E4M3) {
+    if !gpu_supports_hipblaslt_fp8_launch(DType::F8E4M3) {
         return;
     }
 
@@ -924,11 +924,11 @@ fn cublaslt_fp8_e4m3_beta_candidate_executes_2d_matmul_plus_f32_c() {
         "32F",
         DType::F32,
     );
-    let llir = extract_forced_cublaslt_llir_where(&mut cx, "functional fp8 beta", |llir| {
-        cublaslt_type_tuples(llir).contains(&expected_tuple)
-            && cublaslt_scale_value_tuples(llir).contains(&(1.0, 1.0))
-            && cublaslt_transpose_op_tuples(llir).contains(&("T", "N"))
-            && cublaslt_matrix_order_tuples(llir).contains(&("COL", "COL", "COL", "COL"))
+    let llir = extract_forced_hipblaslt_llir_where(&mut cx, "functional fp8 beta", |llir| {
+        hipblaslt_type_tuples(llir).contains(&expected_tuple)
+            && hipblaslt_scale_value_tuples(llir).contains(&(1.0, 1.0))
+            && hipblaslt_transpose_op_tuples(llir).contains(&("T", "N"))
+            && hipblaslt_matrix_order_tuples(llir).contains(&("COL", "COL", "COL", "COL"))
     });
 
     let (a_bytes, a_values) = fp8_exact_bytes(DType::F8E4M3, m * k, 1);
@@ -951,12 +951,12 @@ fn cublaslt_fp8_e4m3_beta_candidate_executes_2d_matmul_plus_f32_c() {
 }
 
 #[test]
-#[ignore = "expensive CUDA FP8 rewrite sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_fp8_scaled_candidate_executes_2d_matmul_f32_output() {
-    let Some(stream) = get_cuda_stream() else {
+#[ignore = "expensive ROCm FP8 rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_fp8_scaled_candidate_executes_2d_matmul_f32_output() {
+    let Some(stream) = get_rocm_stream() else {
         return;
     };
-    if !gpu_supports_cublaslt_fp8_launch(DType::F8E4M3) {
+    if !gpu_supports_hipblaslt_fp8_launch(DType::F8E4M3) {
         return;
     }
 
@@ -978,11 +978,11 @@ fn cublaslt_fp8_scaled_candidate_executes_2d_matmul_f32_output() {
         "32F",
         DType::F32,
     );
-    let llir = extract_forced_cublaslt_llir_where(&mut cx, "functional scaled fp8", |llir| {
-        cublaslt_type_tuples(llir).contains(&expected_tuple)
-            && cublaslt_tensor_scale_input_tuples(llir).contains(&(true, true))
-            && cublaslt_transpose_op_tuples(llir).contains(&("T", "N"))
-            && cublaslt_matrix_order_tuples(llir).contains(&("COL", "COL", "COL", "COL"))
+    let llir = extract_forced_hipblaslt_llir_where(&mut cx, "functional scaled fp8", |llir| {
+        hipblaslt_type_tuples(llir).contains(&expected_tuple)
+            && hipblaslt_tensor_scale_input_tuples(llir).contains(&(true, true))
+            && hipblaslt_transpose_op_tuples(llir).contains(&("T", "N"))
+            && hipblaslt_matrix_order_tuples(llir).contains(&("COL", "COL", "COL", "COL"))
     });
 
     let input_scale = 0.25f32;
@@ -1014,7 +1014,7 @@ fn cublaslt_fp8_scaled_candidate_executes_2d_matmul_f32_output() {
 }
 
 #[test]
-fn cublaslt_fp8_scaled_candidate_reaches_fused_output_scale_consumer() {
+fn hipblaslt_fp8_scaled_candidate_reaches_fused_output_scale_consumer() {
     let (m, n, k) = (16, 16, 16);
     let mut cx = Graph::new();
     let a = cx.tensor((m, k));
@@ -1031,18 +1031,18 @@ fn cublaslt_fp8_scaled_candidate_reaches_fused_output_scale_consumer() {
     let egraph = cx.egraph().expect("search space should have an e-graph");
 
     assert!(
-        dataflow_reachable_cublaslt_scaled_count(egraph) > 0,
-        "scaled cuBLASLt must remain reachable when fusion growth consumes the output-scale multiply internally"
+        dataflow_reachable_hipblaslt_scaled_count(egraph) > 0,
+        "scaled hipBLASLt must remain reachable when fusion growth consumes the output-scale multiply internally"
     );
     assert_eq!(
-        dataflow_reachable_cublaslt_raw_fp8_count(egraph),
+        dataflow_reachable_hipblaslt_raw_fp8_count(egraph),
         0,
-        "raw FP8 cuBLASLt must be deleted when a scaled equivalent covers the fused output-scale consumer"
+        "raw FP8 hipBLASLt must be deleted when a scaled equivalent covers the fused output-scale consumer"
     );
 }
 
 #[test]
-fn cublaslt_fp8_scaled_candidates_reach_fused_mlp_consumer() {
+fn hipblaslt_fp8_scaled_candidates_reach_fused_mlp_consumer() {
     let (m, n, k) = (16, 32, 16);
     let mut cx = Graph::new();
     let a = cx.tensor((m, k));
@@ -1065,23 +1065,23 @@ fn cublaslt_fp8_scaled_candidates_reach_fused_mlp_consumer() {
     let egraph = cx.egraph().expect("search space should have an e-graph");
 
     assert!(
-        dataflow_reachable_cublaslt_scaled_count(egraph) >= 2,
-        "scaled cuBLASLt candidates must remain reachable through fused MLP gate/up consumers"
+        dataflow_reachable_hipblaslt_scaled_count(egraph) >= 2,
+        "scaled hipBLASLt candidates must remain reachable through fused MLP gate/up consumers"
     );
     assert_eq!(
-        dataflow_reachable_cublaslt_raw_fp8_count(egraph),
+        dataflow_reachable_hipblaslt_raw_fp8_count(egraph),
         0,
-        "raw FP8 cuBLASLt must be deleted when a scaled equivalent covers the fused MLP consumer"
+        "raw FP8 hipBLASLt must be deleted when a scaled equivalent covers the fused MLP consumer"
     );
 }
 
 #[test]
-#[ignore = "expensive CUDA FP8 rewrite sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_fp8_scaled_candidate_executes_batched_matmul_f32_output() {
-    let Some(stream) = get_cuda_stream() else {
+#[ignore = "expensive ROCm FP8 rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_fp8_scaled_candidate_executes_batched_matmul_f32_output() {
+    let Some(stream) = get_rocm_stream() else {
         return;
     };
-    if !gpu_supports_cublaslt_fp8_launch(DType::F8E4M3) {
+    if !gpu_supports_hipblaslt_fp8_launch(DType::F8E4M3) {
         return;
     }
 
@@ -1107,11 +1107,11 @@ fn cublaslt_fp8_scaled_candidate_executes_batched_matmul_f32_output() {
         DType::F32,
     );
     let llir =
-        extract_forced_cublaslt_llir_where(&mut cx, "functional scaled batched fp8", |llir| {
-            cublaslt_type_tuples(llir).contains(&expected_tuple)
-                && cublaslt_tensor_scale_input_tuples(llir).contains(&(true, true))
-                && cublaslt_transpose_op_tuples(llir).contains(&("T", "N"))
-                && cublaslt_matrix_order_tuples(llir).contains(&("COL", "COL", "COL", "COL"))
+        extract_forced_hipblaslt_llir_where(&mut cx, "functional scaled batched fp8", |llir| {
+            hipblaslt_type_tuples(llir).contains(&expected_tuple)
+                && hipblaslt_tensor_scale_input_tuples(llir).contains(&(true, true))
+                && hipblaslt_transpose_op_tuples(llir).contains(&("T", "N"))
+                && hipblaslt_matrix_order_tuples(llir).contains(&("COL", "COL", "COL", "COL"))
         });
 
     let input_scale = 0.5f32;
@@ -1140,11 +1140,11 @@ fn cublaslt_fp8_scaled_candidate_executes_batched_matmul_f32_output() {
     assert_close(&rt.get_f32(out.id), &expected, 1e-5, 1e-5);
 }
 
-fn cublaslt_fp8_candidate_executes_2d_matmul_f32_output(a_dtype: DType, b_dtype: DType) {
-    let Some(stream) = get_cuda_stream() else {
+fn hipblaslt_fp8_candidate_executes_2d_matmul_f32_output(a_dtype: DType, b_dtype: DType) {
+    let Some(stream) = get_rocm_stream() else {
         return;
     };
-    if !gpu_supports_cublaslt_fp8_launch_pair(a_dtype, b_dtype) {
+    if !gpu_supports_hipblaslt_fp8_launch_pair(a_dtype, b_dtype) {
         return;
     }
 
@@ -1152,11 +1152,11 @@ fn cublaslt_fp8_candidate_executes_2d_matmul_f32_output(a_dtype: DType, b_dtype:
     let mut cx = Graph::new();
     let (a, b_input, out) = build_fp8_2d_cast_matmul_f32_graph(&mut cx, a_dtype, b_dtype, m, n, k);
     let expected_tuple = (b_dtype, a_dtype, DType::F32, DType::F32, "32F", DType::F32);
-    let llir = extract_forced_cublaslt_llir_where(&mut cx, "functional fp8 f32 output", |llir| {
-        cublaslt_type_tuples(llir).contains(&expected_tuple)
-            && cublaslt_scale_value_tuples(llir).contains(&(1.0, 0.0))
-            && cublaslt_transpose_op_tuples(llir).contains(&("T", "N"))
-            && cublaslt_matrix_order_tuples(llir).contains(&("COL", "COL", "COL", "COL"))
+    let llir = extract_forced_hipblaslt_llir_where(&mut cx, "functional fp8 f32 output", |llir| {
+        hipblaslt_type_tuples(llir).contains(&expected_tuple)
+            && hipblaslt_scale_value_tuples(llir).contains(&(1.0, 0.0))
+            && hipblaslt_transpose_op_tuples(llir).contains(&("T", "N"))
+            && hipblaslt_matrix_order_tuples(llir).contains(&("COL", "COL", "COL", "COL"))
     });
 
     let (a_bytes, a_values) = fp8_exact_bytes(a_dtype, m * k, 2);
@@ -1173,22 +1173,22 @@ fn cublaslt_fp8_candidate_executes_2d_matmul_f32_output(a_dtype: DType, b_dtype:
     assert_close(&rt.get_f32(out.id), &expected, 1e-5, 1e-5);
 }
 
-fn cublaslt_fp8_same_type_does_not_match_2d_matmul_f32_output(dtype: DType) {
+fn hipblaslt_fp8_same_type_does_not_match_2d_matmul_f32_output(dtype: DType) {
     let (m, n, k) = (16, 16, 16);
     let mut cx = Graph::new();
     let (_a, _b_input, _out) = build_fp8_2d_cast_matmul_f32_graph(&mut cx, dtype, dtype, m, n, k);
 
     let expected_tuple = (dtype, dtype, DType::F32, DType::F32, "32F", DType::F32);
-    assert_no_cublaslt_llir_where(&mut cx, "illegal fp8 same-type f32 output", |llir| {
-        cublaslt_type_tuples(llir).contains(&expected_tuple)
+    assert_no_hipblaslt_llir_where(&mut cx, "illegal fp8 same-type f32 output", |llir| {
+        hipblaslt_type_tuples(llir).contains(&expected_tuple)
     });
 }
 
-fn cublaslt_fp8_candidate_executes_batched_matmul_f32_output(a_dtype: DType, b_dtype: DType) {
-    let Some(stream) = get_cuda_stream() else {
+fn hipblaslt_fp8_candidate_executes_batched_matmul_f32_output(a_dtype: DType, b_dtype: DType) {
+    let Some(stream) = get_rocm_stream() else {
         return;
     };
-    if !gpu_supports_cublaslt_fp8_launch_pair(a_dtype, b_dtype) {
+    if !gpu_supports_hipblaslt_fp8_launch_pair(a_dtype, b_dtype) {
         return;
     }
 
@@ -1198,11 +1198,11 @@ fn cublaslt_fp8_candidate_executes_batched_matmul_f32_output(a_dtype: DType, b_d
         build_fp8_batched_cast_matmul_f32_graph(&mut cx, a_dtype, b_dtype, batch, m, n, k);
     let expected_tuple = (b_dtype, a_dtype, DType::F32, DType::F32, "32F", DType::F32);
     let llir =
-        extract_forced_cublaslt_llir_where(&mut cx, "functional batched fp8 f32 output", |llir| {
-            cublaslt_type_tuples(llir).contains(&expected_tuple)
-                && cublaslt_scale_value_tuples(llir).contains(&(1.0, 0.0))
-                && cublaslt_transpose_op_tuples(llir).contains(&("T", "N"))
-                && cublaslt_matrix_order_tuples(llir).contains(&("COL", "COL", "COL", "COL"))
+        extract_forced_hipblaslt_llir_where(&mut cx, "functional batched fp8 f32 output", |llir| {
+            hipblaslt_type_tuples(llir).contains(&expected_tuple)
+                && hipblaslt_scale_value_tuples(llir).contains(&(1.0, 0.0))
+                && hipblaslt_transpose_op_tuples(llir).contains(&("T", "N"))
+                && hipblaslt_matrix_order_tuples(llir).contains(&("COL", "COL", "COL", "COL"))
         });
 
     let (a_bytes, a_values) = fp8_exact_bytes(a_dtype, batch * m * k, 5);
@@ -1219,17 +1219,17 @@ fn cublaslt_fp8_candidate_executes_batched_matmul_f32_output(a_dtype: DType, b_d
     assert_close(&rt.get_f32(out.id), &expected, 1e-5, 1e-5);
 }
 
-fn cublaslt_fp8_same_type_does_not_match_batched_matmul_f32_output(dtype: DType) {
+fn hipblaslt_fp8_same_type_does_not_match_batched_matmul_f32_output(dtype: DType) {
     let (batch, m, n, k) = (2, 16, 16, 16);
     let mut cx = Graph::new();
     let (_a, _b_input, _out) =
         build_fp8_batched_cast_matmul_f32_graph(&mut cx, dtype, dtype, batch, m, n, k);
 
     let expected_tuple = (dtype, dtype, DType::F32, DType::F32, "32F", DType::F32);
-    assert_no_cublaslt_llir_where(
+    assert_no_hipblaslt_llir_where(
         &mut cx,
         "illegal batched fp8 same-type f32 output",
-        |llir| cublaslt_type_tuples(llir).contains(&expected_tuple),
+        |llir| hipblaslt_type_tuples(llir).contains(&expected_tuple),
     );
 }
 
@@ -1285,11 +1285,11 @@ fn unchecked_mul_same_shape(lhs: GraphTensor, rhs: GraphTensor, dtype: DType) ->
 }
 
 #[test]
-#[ignore = "expensive CUDA rewrite sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_rewrites_cover_2d_matmul_plus_column_bias_epilogue() {
+#[ignore = "expensive ROCm rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_rewrites_cover_2d_matmul_plus_column_bias_epilogue() {
     for case in LAYOUT_CASES {
         for commuted in [false, true] {
-            assert_cublaslt_epilogue_rewrite(
+            assert_hipblaslt_epilogue_rewrite(
                 build_2d_matmul_plus_column_bias_graph(case, DType::F32, commuted),
                 case.name,
                 "BIAS",
@@ -1300,11 +1300,11 @@ fn cublaslt_rewrites_cover_2d_matmul_plus_column_bias_epilogue() {
 }
 
 #[test]
-#[ignore = "expensive CUDA rewrite sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_rewrites_cover_batched_matmul_plus_column_bias_epilogue() {
+#[ignore = "expensive ROCm rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_rewrites_cover_batched_matmul_plus_column_bias_epilogue() {
     for case in LAYOUT_CASES {
         for commuted in [false, true] {
-            assert_cublaslt_epilogue_rewrite(
+            assert_hipblaslt_epilogue_rewrite(
                 build_batched_matmul_plus_column_bias_graph(case, DType::F32, commuted),
                 case.name,
                 "BIAS",
@@ -1315,11 +1315,11 @@ fn cublaslt_rewrites_cover_batched_matmul_plus_column_bias_epilogue() {
 }
 
 #[test]
-#[ignore = "expensive CUDA negative rewrite sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_rewrites_do_not_emit_row_order_row_bias_epilogue() {
+#[ignore = "expensive ROCm negative rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_rewrites_do_not_emit_row_order_row_bias_epilogue() {
     for case in LAYOUT_CASES {
         for commuted in [false, true] {
-            assert_no_forced_cublaslt_epilogue_rewrite(
+            assert_no_forced_hipblaslt_epilogue_rewrite(
                 build_2d_matmul_plus_row_bias_graph(case, DType::F32, commuted),
                 case.name,
                 "BIAS",
@@ -1330,11 +1330,11 @@ fn cublaslt_rewrites_do_not_emit_row_order_row_bias_epilogue() {
 }
 
 #[test]
-#[ignore = "expensive CUDA negative rewrite sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_rewrites_do_not_emit_batched_row_order_row_bias_epilogue() {
+#[ignore = "expensive ROCm negative rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_rewrites_do_not_emit_batched_row_order_row_bias_epilogue() {
     for case in LAYOUT_CASES {
         for commuted in [false, true] {
-            assert_no_forced_cublaslt_epilogue_rewrite(
+            assert_no_forced_hipblaslt_epilogue_rewrite(
                 build_batched_matmul_plus_row_bias_graph(case, DType::F32, commuted),
                 case.name,
                 "BIAS",
@@ -1345,10 +1345,10 @@ fn cublaslt_rewrites_do_not_emit_batched_row_order_row_bias_epilogue() {
 }
 
 #[test]
-#[ignore = "expensive CUDA rewrite sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_rewrites_cover_2d_matmul_relu_epilogue() {
+#[ignore = "expensive ROCm rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_rewrites_cover_2d_matmul_relu_epilogue() {
     for case in LAYOUT_CASES {
-        assert_cublaslt_epilogue_rewrite(
+        assert_hipblaslt_epilogue_rewrite(
             build_2d_matmul_relu_graph(case, DType::F32),
             case.name,
             "RELU",
@@ -1358,10 +1358,10 @@ fn cublaslt_rewrites_cover_2d_matmul_relu_epilogue() {
 }
 
 #[test]
-#[ignore = "expensive CUDA rewrite sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_rewrites_cover_batched_matmul_relu_epilogue() {
+#[ignore = "expensive ROCm rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_rewrites_cover_batched_matmul_relu_epilogue() {
     for case in LAYOUT_CASES {
-        assert_cublaslt_epilogue_rewrite(
+        assert_hipblaslt_epilogue_rewrite(
             build_batched_matmul_relu_graph(case, DType::F32),
             case.name,
             "RELU",
@@ -1371,11 +1371,11 @@ fn cublaslt_rewrites_cover_batched_matmul_relu_epilogue() {
 }
 
 #[test]
-#[ignore = "expensive CUDA rewrite sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_rewrites_cover_2d_matmul_plus_column_bias_relu_epilogue() {
+#[ignore = "expensive ROCm rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_rewrites_cover_2d_matmul_plus_column_bias_relu_epilogue() {
     for case in LAYOUT_CASES {
         for commuted in [false, true] {
-            assert_cublaslt_epilogue_rewrite(
+            assert_hipblaslt_epilogue_rewrite(
                 build_2d_matmul_plus_column_bias_relu_graph(case, DType::F32, commuted),
                 case.name,
                 "RELU_BIAS",
@@ -1386,11 +1386,11 @@ fn cublaslt_rewrites_cover_2d_matmul_plus_column_bias_relu_epilogue() {
 }
 
 #[test]
-#[ignore = "expensive CUDA rewrite sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_rewrites_cover_batched_matmul_plus_column_bias_relu_epilogue() {
+#[ignore = "expensive ROCm rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_rewrites_cover_batched_matmul_plus_column_bias_relu_epilogue() {
     for case in LAYOUT_CASES {
         for commuted in [false, true] {
-            assert_cublaslt_epilogue_rewrite(
+            assert_hipblaslt_epilogue_rewrite(
                 build_batched_matmul_plus_column_bias_relu_graph(case, DType::F32, commuted),
                 case.name,
                 "RELU_BIAS",
@@ -1401,10 +1401,10 @@ fn cublaslt_rewrites_cover_batched_matmul_plus_column_bias_relu_epilogue() {
 }
 
 #[test]
-#[ignore = "expensive CUDA rewrite sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_rewrites_cover_2d_matmul_gelu_epilogue() {
+#[ignore = "expensive ROCm rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_rewrites_cover_2d_matmul_gelu_epilogue() {
     for case in LAYOUT_CASES {
-        assert_cublaslt_epilogue_rewrite(
+        assert_hipblaslt_epilogue_rewrite(
             build_2d_matmul_gelu_graph(case, DType::F32),
             case.name,
             "GELU",
@@ -1414,10 +1414,10 @@ fn cublaslt_rewrites_cover_2d_matmul_gelu_epilogue() {
 }
 
 #[test]
-#[ignore = "expensive CUDA rewrite sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_rewrites_cover_batched_matmul_gelu_epilogue() {
+#[ignore = "expensive ROCm rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_rewrites_cover_batched_matmul_gelu_epilogue() {
     for case in LAYOUT_CASES {
-        assert_cublaslt_epilogue_rewrite(
+        assert_hipblaslt_epilogue_rewrite(
             build_batched_matmul_gelu_graph(case, DType::F32),
             case.name,
             "GELU",
@@ -1427,11 +1427,11 @@ fn cublaslt_rewrites_cover_batched_matmul_gelu_epilogue() {
 }
 
 #[test]
-#[ignore = "expensive CUDA rewrite sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_rewrites_cover_2d_matmul_plus_column_bias_gelu_epilogue() {
+#[ignore = "expensive ROCm rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_rewrites_cover_2d_matmul_plus_column_bias_gelu_epilogue() {
     for case in LAYOUT_CASES {
         for commuted in [false, true] {
-            assert_cublaslt_epilogue_rewrite(
+            assert_hipblaslt_epilogue_rewrite(
                 build_2d_matmul_plus_column_bias_gelu_graph(case, DType::F32, commuted),
                 case.name,
                 "GELU_BIAS",
@@ -1442,11 +1442,11 @@ fn cublaslt_rewrites_cover_2d_matmul_plus_column_bias_gelu_epilogue() {
 }
 
 #[test]
-#[ignore = "expensive CUDA rewrite sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_rewrites_cover_batched_matmul_plus_column_bias_gelu_epilogue() {
+#[ignore = "expensive ROCm rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_rewrites_cover_batched_matmul_plus_column_bias_gelu_epilogue() {
     for case in LAYOUT_CASES {
         for commuted in [false, true] {
-            assert_cublaslt_epilogue_rewrite(
+            assert_hipblaslt_epilogue_rewrite(
                 build_batched_matmul_plus_column_bias_gelu_graph(case, DType::F32, commuted),
                 case.name,
                 "GELU_BIAS",
@@ -1457,9 +1457,9 @@ fn cublaslt_rewrites_cover_batched_matmul_plus_column_bias_gelu_epilogue() {
 }
 
 #[test]
-fn cublaslt_beta_rewrite_does_not_cross_activation_epilogues() {
+fn hipblaslt_beta_rewrite_does_not_cross_activation_epilogues() {
     let case = LAYOUT_CASES[0];
-    assert_no_forced_cublaslt_llir_where(
+    assert_no_forced_hipblaslt_llir_where(
         &mut build_2d_matmul_plus_column_bias_activation_plus_c_graph(
             case,
             DType::F32,
@@ -1467,9 +1467,9 @@ fn cublaslt_beta_rewrite_does_not_cross_activation_epilogues() {
             |x| x.relu(),
         ),
         case.name,
-        |llir| cublaslt_epilogue_scale_tuples(llir).contains(&("RELU_BIAS", (1.0, 1.0))),
+        |llir| hipblaslt_epilogue_scale_tuples(llir).contains(&("RELU_BIAS", (1.0, 1.0))),
     );
-    assert_no_forced_cublaslt_llir_where(
+    assert_no_forced_hipblaslt_llir_where(
         &mut build_2d_matmul_plus_column_bias_activation_plus_c_graph(
             case,
             DType::F32,
@@ -1477,16 +1477,16 @@ fn cublaslt_beta_rewrite_does_not_cross_activation_epilogues() {
             |x| x.gelu(),
         ),
         case.name,
-        |llir| cublaslt_epilogue_scale_tuples(llir).contains(&("GELU_BIAS", (1.0, 1.0))),
+        |llir| hipblaslt_epilogue_scale_tuples(llir).contains(&("GELU_BIAS", (1.0, 1.0))),
     );
 }
 
 #[test]
-#[ignore = "expensive CUDA negative rewrite sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_beta_rewrite_does_not_cross_activation_epilogues_exhaustive() {
+#[ignore = "expensive ROCm negative rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_beta_rewrite_does_not_cross_activation_epilogues_exhaustive() {
     for case in LAYOUT_CASES {
         for commuted in [false, true] {
-            assert_no_forced_cublaslt_llir_where(
+            assert_no_forced_hipblaslt_llir_where(
                 &mut build_2d_matmul_plus_column_bias_activation_plus_c_graph(
                     case,
                     DType::F32,
@@ -1494,9 +1494,9 @@ fn cublaslt_beta_rewrite_does_not_cross_activation_epilogues_exhaustive() {
                     |x| x.relu(),
                 ),
                 case.name,
-                |llir| cublaslt_epilogue_scale_tuples(llir).contains(&("RELU_BIAS", (1.0, 1.0))),
+                |llir| hipblaslt_epilogue_scale_tuples(llir).contains(&("RELU_BIAS", (1.0, 1.0))),
             );
-            assert_no_forced_cublaslt_llir_where(
+            assert_no_forced_hipblaslt_llir_where(
                 &mut build_2d_matmul_plus_column_bias_activation_plus_c_graph(
                     case,
                     DType::F32,
@@ -1504,42 +1504,42 @@ fn cublaslt_beta_rewrite_does_not_cross_activation_epilogues_exhaustive() {
                     |x| x.gelu(),
                 ),
                 case.name,
-                |llir| cublaslt_epilogue_scale_tuples(llir).contains(&("GELU_BIAS", (1.0, 1.0))),
+                |llir| hipblaslt_epilogue_scale_tuples(llir).contains(&("GELU_BIAS", (1.0, 1.0))),
             );
         }
     }
 }
 
 #[test]
-fn cublaslt_alpha_scale_rewrite_does_not_cross_bias_epilogue() {
+fn hipblaslt_alpha_scale_rewrite_does_not_cross_bias_epilogue() {
     let case = LAYOUT_CASES[0];
-    assert_no_forced_cublaslt_llir_where(
+    assert_no_forced_hipblaslt_llir_where(
         &mut build_2d_matmul_plus_column_bias_scaled_graph(case, DType::F32, false),
         case.name,
-        |llir| cublaslt_epilogue_scale_tuples(llir).contains(&("BIAS", (1.5, 0.0))),
+        |llir| hipblaslt_epilogue_scale_tuples(llir).contains(&("BIAS", (1.5, 0.0))),
     );
 }
 
 #[test]
-#[ignore = "expensive CUDA negative rewrite sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_alpha_scale_rewrite_does_not_cross_bias_epilogue_exhaustive() {
+#[ignore = "expensive ROCm negative rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_alpha_scale_rewrite_does_not_cross_bias_epilogue_exhaustive() {
     for case in LAYOUT_CASES {
         for commuted in [false, true] {
-            assert_no_forced_cublaslt_llir_where(
+            assert_no_forced_hipblaslt_llir_where(
                 &mut build_2d_matmul_plus_column_bias_scaled_graph(case, DType::F32, commuted),
                 case.name,
-                |llir| cublaslt_epilogue_scale_tuples(llir).contains(&("BIAS", (1.5, 0.0))),
+                |llir| hipblaslt_epilogue_scale_tuples(llir).contains(&("BIAS", (1.5, 0.0))),
             );
         }
     }
 }
 
 #[test]
-#[ignore = "expensive CUDA negative rewrite sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_rewrites_do_not_emit_row_order_row_bias_relu_epilogue() {
+#[ignore = "expensive ROCm negative rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_rewrites_do_not_emit_row_order_row_bias_relu_epilogue() {
     for case in LAYOUT_CASES {
         for commuted in [false, true] {
-            assert_no_forced_cublaslt_epilogue_rewrite(
+            assert_no_forced_hipblaslt_epilogue_rewrite(
                 build_2d_matmul_plus_row_bias_relu_graph(case, DType::F32, commuted),
                 case.name,
                 "RELU_BIAS",
@@ -1550,11 +1550,11 @@ fn cublaslt_rewrites_do_not_emit_row_order_row_bias_relu_epilogue() {
 }
 
 #[test]
-#[ignore = "expensive CUDA negative rewrite sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_rewrites_do_not_emit_batched_row_order_row_bias_relu_epilogue() {
+#[ignore = "expensive ROCm negative rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_rewrites_do_not_emit_batched_row_order_row_bias_relu_epilogue() {
     for case in LAYOUT_CASES {
         for commuted in [false, true] {
-            assert_no_forced_cublaslt_epilogue_rewrite(
+            assert_no_forced_hipblaslt_epilogue_rewrite(
                 build_batched_matmul_plus_row_bias_relu_graph(case, DType::F32, commuted),
                 case.name,
                 "RELU_BIAS",
@@ -1565,9 +1565,9 @@ fn cublaslt_rewrites_do_not_emit_batched_row_order_row_bias_relu_epilogue() {
 }
 
 #[test]
-#[ignore = "expensive CUDA functional candidate sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_beta_one_candidate_executes_2d_matmul_plus_c() {
-    let Some(stream) = get_cuda_stream() else {
+#[ignore = "expensive ROCm functional candidate sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_beta_one_candidate_executes_2d_matmul_plus_c() {
+    let Some(stream) = get_rocm_stream() else {
         return;
     };
 
@@ -1577,8 +1577,8 @@ fn cublaslt_beta_one_candidate_executes_2d_matmul_plus_c() {
     let b = cx.tensor((k, n));
     let c = cx.tensor((m, n));
     let out = (a.matmul(b) + c).output();
-    let llir = extract_forced_cublaslt_llir_where(&mut cx, "functional beta=1", |llir| {
-        cublaslt_scale_value_tuples(llir).contains(&(1.0, 1.0))
+    let llir = extract_forced_hipblaslt_llir_where(&mut cx, "functional beta=1", |llir| {
+        hipblaslt_scale_value_tuples(llir).contains(&(1.0, 1.0))
     });
 
     let a_data = random_f32_vec(m * k, 0xA11CE, -0.5, 0.5);
@@ -1598,9 +1598,9 @@ fn cublaslt_beta_one_candidate_executes_2d_matmul_plus_c() {
 }
 
 #[test]
-#[ignore = "expensive CUDA functional candidate sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_beta_one_candidate_executes_2d_matmul_plus_sliced_c() {
-    let Some(stream) = get_cuda_stream() else {
+#[ignore = "expensive ROCm functional candidate sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_beta_one_candidate_executes_2d_matmul_plus_sliced_c() {
+    let Some(stream) = get_rocm_stream() else {
         return;
     };
 
@@ -1612,9 +1612,9 @@ fn cublaslt_beta_one_candidate_executes_2d_matmul_plus_sliced_c() {
     let c_base = cx.tensor((m, c_parent_n));
     let c = c_base.slice((0..m, 0..n));
     let out = (a.matmul(b) + c).output();
-    let llir = extract_forced_cublaslt_llir_where(&mut cx, "functional beta=1 sliced C", |llir| {
-        cublaslt_scale_value_tuples(llir).contains(&(1.0, 1.0))
-            && cublaslt_c_d_layout_matches(llir).contains(&false)
+    let llir = extract_forced_hipblaslt_llir_where(&mut cx, "functional beta=1 sliced C", |llir| {
+        hipblaslt_scale_value_tuples(llir).contains(&(1.0, 1.0))
+            && hipblaslt_c_d_layout_matches(llir).contains(&false)
     });
 
     let a_data = random_f32_vec(m * k, 0x05A1_1CEA, -0.5, 0.5);
@@ -1639,9 +1639,9 @@ fn cublaslt_beta_one_candidate_executes_2d_matmul_plus_sliced_c() {
 }
 
 #[test]
-#[ignore = "expensive CUDA functional candidate sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_beta_one_candidate_executes_batched_matmul_plus_c() {
-    let Some(stream) = get_cuda_stream() else {
+#[ignore = "expensive ROCm functional candidate sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_beta_one_candidate_executes_batched_matmul_plus_c() {
+    let Some(stream) = get_rocm_stream() else {
         return;
     };
 
@@ -1651,8 +1651,8 @@ fn cublaslt_beta_one_candidate_executes_batched_matmul_plus_c() {
     let b = cx.tensor((batch, k, n));
     let c = cx.tensor((batch, m, n));
     let out = (a.matmul(b) + c).output();
-    let llir = extract_forced_cublaslt_llir_where(&mut cx, "functional batched beta=1", |llir| {
-        cublaslt_scale_value_tuples(llir).contains(&(1.0, 1.0))
+    let llir = extract_forced_hipblaslt_llir_where(&mut cx, "functional batched beta=1", |llir| {
+        hipblaslt_scale_value_tuples(llir).contains(&(1.0, 1.0))
     });
 
     let a_data = random_f32_vec(batch * m * k, 0xBA7C_A11CE, -0.5, 0.5);
@@ -1672,9 +1672,9 @@ fn cublaslt_beta_one_candidate_executes_batched_matmul_plus_c() {
 }
 
 #[test]
-#[ignore = "expensive CUDA functional candidate sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_beta_one_candidate_executes_batched_matmul_plus_sliced_c() {
-    let Some(stream) = get_cuda_stream() else {
+#[ignore = "expensive ROCm functional candidate sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_beta_one_candidate_executes_batched_matmul_plus_sliced_c() {
+    let Some(stream) = get_rocm_stream() else {
         return;
     };
 
@@ -1687,9 +1687,9 @@ fn cublaslt_beta_one_candidate_executes_batched_matmul_plus_sliced_c() {
     let c = c_base.slice((0..batch, 0..m, 0..n));
     let out = (a.matmul(b) + c).output();
     let llir =
-        extract_forced_cublaslt_llir_where(&mut cx, "functional batched beta=1 sliced C", |llir| {
-            cublaslt_scale_value_tuples(llir).contains(&(1.0, 1.0))
-                && cublaslt_c_d_layout_matches(llir).contains(&false)
+        extract_forced_hipblaslt_llir_where(&mut cx, "functional batched beta=1 sliced C", |llir| {
+            hipblaslt_scale_value_tuples(llir).contains(&(1.0, 1.0))
+                && hipblaslt_c_d_layout_matches(llir).contains(&false)
         });
 
     let a_data = random_f32_vec(batch * m * k, 0xBA7C_5A11, -0.5, 0.5);
@@ -1714,9 +1714,9 @@ fn cublaslt_beta_one_candidate_executes_batched_matmul_plus_sliced_c() {
 }
 
 #[test]
-#[ignore = "expensive CUDA functional candidate sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_beta_one_candidate_executes_2d_matmul_plus_offset_c() {
-    let Some(stream) = get_cuda_stream() else {
+#[ignore = "expensive ROCm functional candidate sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_beta_one_candidate_executes_2d_matmul_plus_offset_c() {
+    let Some(stream) = get_rocm_stream() else {
         return;
     };
 
@@ -1728,9 +1728,9 @@ fn cublaslt_beta_one_candidate_executes_2d_matmul_plus_offset_c() {
     let c_base = cx.tensor((c_parent_m, c_parent_n));
     let c = c_base.slice((1..(m + 1), 2..(n + 2)));
     let out = (a.matmul(b) + c).output();
-    let llir = extract_forced_cublaslt_llir_where(&mut cx, "functional beta=1 offset C", |llir| {
-        cublaslt_scale_value_tuples(llir).contains(&(1.0, 1.0))
-            && cublaslt_c_d_layout_matches(llir).contains(&true)
+    let llir = extract_forced_hipblaslt_llir_where(&mut cx, "functional beta=1 offset C", |llir| {
+        hipblaslt_scale_value_tuples(llir).contains(&(1.0, 1.0))
+            && hipblaslt_c_d_layout_matches(llir).contains(&true)
     });
 
     let a_data = random_f32_vec(m * k, 0x0FF5_E7A1, -0.5, 0.5);
@@ -1755,9 +1755,9 @@ fn cublaslt_beta_one_candidate_executes_2d_matmul_plus_offset_c() {
 }
 
 #[test]
-#[ignore = "expensive CUDA functional candidate sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_beta_one_candidate_executes_batched_matmul_plus_offset_c() {
-    let Some(stream) = get_cuda_stream() else {
+#[ignore = "expensive ROCm functional candidate sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_beta_one_candidate_executes_batched_matmul_plus_offset_c() {
+    let Some(stream) = get_rocm_stream() else {
         return;
     };
 
@@ -1770,9 +1770,9 @@ fn cublaslt_beta_one_candidate_executes_batched_matmul_plus_offset_c() {
     let c = c_base.slice((1..(batch + 1), 1..(m + 1), 2..(n + 2)));
     let out = (a.matmul(b) + c).output();
     let llir =
-        extract_forced_cublaslt_llir_where(&mut cx, "functional batched beta=1 offset C", |llir| {
-            cublaslt_scale_value_tuples(llir).contains(&(1.0, 1.0))
-                && cublaslt_c_d_layout_matches(llir).contains(&true)
+        extract_forced_hipblaslt_llir_where(&mut cx, "functional batched beta=1 offset C", |llir| {
+            hipblaslt_scale_value_tuples(llir).contains(&(1.0, 1.0))
+                && hipblaslt_c_d_layout_matches(llir).contains(&true)
         });
 
     let a_data = random_f32_vec(batch * m * k, 0xBA7C_0FF5, -0.5, 0.5);
@@ -1802,9 +1802,9 @@ fn cublaslt_beta_one_candidate_executes_batched_matmul_plus_offset_c() {
 }
 
 #[test]
-#[ignore = "expensive CUDA functional candidate sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_scaled_alpha_beta_candidate_executes_2d_matmul_plus_c() {
-    let Some(stream) = get_cuda_stream() else {
+#[ignore = "expensive ROCm functional candidate sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_scaled_alpha_beta_candidate_executes_2d_matmul_plus_c() {
+    let Some(stream) = get_rocm_stream() else {
         return;
     };
 
@@ -1816,9 +1816,9 @@ fn cublaslt_scaled_alpha_beta_candidate_executes_2d_matmul_plus_c() {
     let c = cx.tensor((m, n));
     let out = (a.matmul(b) * alpha + c * beta).output();
     let llir =
-        extract_forced_cublaslt_llir_where(&mut cx, "functional scaled alpha beta", |llir| {
-            cublaslt_scale_value_tuples(llir).contains(&(alpha as f64, beta as f64))
-                && cublaslt_matrix_order_tuples(llir).contains(&("ROW", "ROW", "ROW", "ROW"))
+        extract_forced_hipblaslt_llir_where(&mut cx, "functional scaled alpha beta", |llir| {
+            hipblaslt_scale_value_tuples(llir).contains(&(alpha as f64, beta as f64))
+                && hipblaslt_matrix_order_tuples(llir).contains(&("ROW", "ROW", "ROW", "ROW"))
         });
 
     let a_data = random_f32_vec(m * k, 0x5CA1_EDA1, -0.5, 0.5);
@@ -1838,9 +1838,9 @@ fn cublaslt_scaled_alpha_beta_candidate_executes_2d_matmul_plus_c() {
 }
 
 #[test]
-#[ignore = "expensive CUDA functional candidate sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_scaled_alpha_beta_candidate_executes_batched_matmul_plus_c() {
-    let Some(stream) = get_cuda_stream() else {
+#[ignore = "expensive ROCm functional candidate sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_scaled_alpha_beta_candidate_executes_batched_matmul_plus_c() {
+    let Some(stream) = get_rocm_stream() else {
         return;
     };
 
@@ -1851,12 +1851,12 @@ fn cublaslt_scaled_alpha_beta_candidate_executes_batched_matmul_plus_c() {
     let b = cx.tensor((batch, k, n));
     let c = cx.tensor((batch, m, n));
     let out = (a.matmul(b) * alpha + c * beta).output();
-    let llir = extract_forced_cublaslt_llir_where(
+    let llir = extract_forced_hipblaslt_llir_where(
         &mut cx,
         "functional batched scaled alpha beta",
         |llir| {
-            cublaslt_scale_value_tuples(llir).contains(&(alpha as f64, beta as f64))
-                && cublaslt_matrix_order_tuples(llir).contains(&("ROW", "ROW", "ROW", "ROW"))
+            hipblaslt_scale_value_tuples(llir).contains(&(alpha as f64, beta as f64))
+                && hipblaslt_matrix_order_tuples(llir).contains(&("ROW", "ROW", "ROW", "ROW"))
         },
     );
 
@@ -1877,9 +1877,9 @@ fn cublaslt_scaled_alpha_beta_candidate_executes_batched_matmul_plus_c() {
 }
 
 #[test]
-#[ignore = "expensive CUDA functional candidate sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_bias_epilogue_candidate_executes_2d_matmul_plus_column_bias() {
-    let Some(stream) = get_cuda_stream() else {
+#[ignore = "expensive ROCm functional candidate sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_bias_epilogue_candidate_executes_2d_matmul_plus_column_bias() {
+    let Some(stream) = get_rocm_stream() else {
         return;
     };
 
@@ -1901,12 +1901,12 @@ fn cublaslt_bias_epilogue_candidate_executes_2d_matmul_plus_column_bias() {
         let bias = cx.tensor(n);
         let bias_expanded = bias.expand_dim(0, m);
         let out = (a.matmul(b) + bias_expanded).output();
-        let llir = extract_forced_cublaslt_llir_where(
+        let llir = extract_forced_hipblaslt_llir_where(
             &mut cx,
             &format!("functional bias epilogue {}", case.name),
             |llir| {
-                cublaslt_epilogues(llir).contains(&"BIAS")
-                    && cublaslt_matrix_order_tuples(llir).contains(&("COL", "COL", "COL", "COL"))
+                hipblaslt_epilogues(llir).contains(&"BIAS")
+                    && hipblaslt_matrix_order_tuples(llir).contains(&("COL", "COL", "COL", "COL"))
             },
         );
 
@@ -1934,9 +1934,9 @@ fn cublaslt_bias_epilogue_candidate_executes_2d_matmul_plus_column_bias() {
 }
 
 #[test]
-#[ignore = "expensive CUDA functional candidate sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_bias_epilogue_candidate_executes_batched_matmul_plus_column_bias() {
-    let Some(stream) = get_cuda_stream() else {
+#[ignore = "expensive ROCm functional candidate sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_bias_epilogue_candidate_executes_batched_matmul_plus_column_bias() {
+    let Some(stream) = get_rocm_stream() else {
         return;
     };
 
@@ -1948,9 +1948,9 @@ fn cublaslt_bias_epilogue_candidate_executes_batched_matmul_plus_column_bias() {
     let bias_expanded = bias.expand_dim(0, m).expand_dim(0, batch);
     let out = (a.matmul(b) + bias_expanded).output();
     let llir =
-        extract_forced_cublaslt_llir_where(&mut cx, "functional batched bias epilogue", |llir| {
-            cublaslt_epilogues(llir).contains(&"BIAS")
-                && cublaslt_matrix_order_tuples(llir).contains(&("COL", "COL", "COL", "COL"))
+        extract_forced_hipblaslt_llir_where(&mut cx, "functional batched bias epilogue", |llir| {
+            hipblaslt_epilogues(llir).contains(&"BIAS")
+                && hipblaslt_matrix_order_tuples(llir).contains(&("COL", "COL", "COL", "COL"))
         });
 
     let a_data = random_f32_vec(batch * m * k, 0xBA7C_B1A5, -0.5, 0.5);
@@ -1976,9 +1976,9 @@ fn cublaslt_bias_epilogue_candidate_executes_batched_matmul_plus_column_bias() {
 }
 
 #[test]
-#[ignore = "expensive CUDA functional candidate sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_relu_bias_epilogue_candidate_executes_2d_matmul_plus_column_bias() {
-    let Some(stream) = get_cuda_stream() else {
+#[ignore = "expensive ROCm functional candidate sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_relu_bias_epilogue_candidate_executes_2d_matmul_plus_column_bias() {
+    let Some(stream) = get_rocm_stream() else {
         return;
     };
 
@@ -1990,9 +1990,9 @@ fn cublaslt_relu_bias_epilogue_candidate_executes_2d_matmul_plus_column_bias() {
     let bias_expanded = bias.expand_dim(0, m);
     let out = (a.matmul(b) + bias_expanded).relu().output();
     let llir =
-        extract_forced_cublaslt_llir_where(&mut cx, "functional relu bias epilogue", |llir| {
-            cublaslt_epilogues(llir).contains(&"RELU_BIAS")
-                && cublaslt_matrix_order_tuples(llir).contains(&("COL", "COL", "COL", "COL"))
+        extract_forced_hipblaslt_llir_where(&mut cx, "functional relu bias epilogue", |llir| {
+            hipblaslt_epilogues(llir).contains(&"RELU_BIAS")
+                && hipblaslt_matrix_order_tuples(llir).contains(&("COL", "COL", "COL", "COL"))
         });
 
     let a_data = random_f32_vec(m * k, 0x2E1F_B1A5, -1.0, 1.0);
@@ -2018,9 +2018,9 @@ fn cublaslt_relu_bias_epilogue_candidate_executes_2d_matmul_plus_column_bias() {
 }
 
 #[test]
-#[ignore = "expensive CUDA functional candidate sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_relu_bias_epilogue_candidate_executes_batched_matmul_plus_column_bias() {
-    let Some(stream) = get_cuda_stream() else {
+#[ignore = "expensive ROCm functional candidate sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_relu_bias_epilogue_candidate_executes_batched_matmul_plus_column_bias() {
+    let Some(stream) = get_rocm_stream() else {
         return;
     };
 
@@ -2031,12 +2031,12 @@ fn cublaslt_relu_bias_epilogue_candidate_executes_batched_matmul_plus_column_bia
     let bias = cx.tensor(n);
     let bias_expanded = bias.expand_dim(0, m).expand_dim(0, batch);
     let out = (a.matmul(b) + bias_expanded).relu().output();
-    let llir = extract_forced_cublaslt_llir_where(
+    let llir = extract_forced_hipblaslt_llir_where(
         &mut cx,
         "functional batched relu column bias epilogue",
         |llir| {
-            cublaslt_epilogues(llir).contains(&"RELU_BIAS")
-                && cublaslt_matrix_order_tuples(llir).contains(&("COL", "COL", "COL", "COL"))
+            hipblaslt_epilogues(llir).contains(&"RELU_BIAS")
+                && hipblaslt_matrix_order_tuples(llir).contains(&("COL", "COL", "COL", "COL"))
         },
     );
 
@@ -2063,9 +2063,9 @@ fn cublaslt_relu_bias_epilogue_candidate_executes_batched_matmul_plus_column_bia
 }
 
 #[test]
-#[ignore = "expensive CUDA functional candidate sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_gelu_epilogue_candidate_executes_2d_matmul() {
-    let Some(stream) = get_cuda_stream() else {
+#[ignore = "expensive ROCm functional candidate sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_gelu_epilogue_candidate_executes_2d_matmul() {
+    let Some(stream) = get_rocm_stream() else {
         return;
     };
 
@@ -2074,8 +2074,8 @@ fn cublaslt_gelu_epilogue_candidate_executes_2d_matmul() {
     let a = cx.tensor((m, k));
     let b = cx.tensor((k, n));
     let out = a.matmul(b).gelu().output();
-    let llir = extract_forced_cublaslt_llir_where(&mut cx, "functional gelu epilogue", |llir| {
-        cublaslt_epilogues(llir).contains(&"GELU")
+    let llir = extract_forced_hipblaslt_llir_where(&mut cx, "functional gelu epilogue", |llir| {
+        hipblaslt_epilogues(llir).contains(&"GELU")
     });
 
     let a_data = random_f32_vec(m * k, 0x9E1F_2EDA, -1.0, 1.0);
@@ -2092,9 +2092,9 @@ fn cublaslt_gelu_epilogue_candidate_executes_2d_matmul() {
 }
 
 #[test]
-#[ignore = "expensive CUDA functional candidate sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_gelu_epilogue_candidate_executes_batched_matmul() {
-    let Some(stream) = get_cuda_stream() else {
+#[ignore = "expensive ROCm functional candidate sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_gelu_epilogue_candidate_executes_batched_matmul() {
+    let Some(stream) = get_rocm_stream() else {
         return;
     };
 
@@ -2104,8 +2104,8 @@ fn cublaslt_gelu_epilogue_candidate_executes_batched_matmul() {
     let b = cx.tensor((batch, k, n));
     let out = a.matmul(b).gelu().output();
     let llir =
-        extract_forced_cublaslt_llir_where(&mut cx, "functional batched gelu epilogue", |llir| {
-            cublaslt_epilogues(llir).contains(&"GELU")
+        extract_forced_hipblaslt_llir_where(&mut cx, "functional batched gelu epilogue", |llir| {
+            hipblaslt_epilogues(llir).contains(&"GELU")
         });
 
     let a_data = random_f32_vec(batch * m * k, 0xBA7C_9E1F, -1.0, 1.0);
@@ -2125,9 +2125,9 @@ fn cublaslt_gelu_epilogue_candidate_executes_batched_matmul() {
 }
 
 #[test]
-#[ignore = "expensive CUDA functional candidate sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_gelu_bias_epilogue_candidate_executes_2d_matmul_plus_column_bias() {
-    let Some(stream) = get_cuda_stream() else {
+#[ignore = "expensive ROCm functional candidate sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_gelu_bias_epilogue_candidate_executes_2d_matmul_plus_column_bias() {
+    let Some(stream) = get_rocm_stream() else {
         return;
     };
 
@@ -2138,12 +2138,12 @@ fn cublaslt_gelu_bias_epilogue_candidate_executes_2d_matmul_plus_column_bias() {
     let bias = cx.tensor(n);
     let bias_expanded = bias.expand_dim(0, m);
     let out = (a.matmul(b) + bias_expanded).gelu().output();
-    let llir = extract_forced_cublaslt_llir_where(
+    let llir = extract_forced_hipblaslt_llir_where(
         &mut cx,
         "functional gelu column bias epilogue",
         |llir| {
-            cublaslt_epilogues(llir).contains(&"GELU_BIAS")
-                && cublaslt_matrix_order_tuples(llir).contains(&("COL", "COL", "COL", "COL"))
+            hipblaslt_epilogues(llir).contains(&"GELU_BIAS")
+                && hipblaslt_matrix_order_tuples(llir).contains(&("COL", "COL", "COL", "COL"))
         },
     );
 
@@ -2170,9 +2170,9 @@ fn cublaslt_gelu_bias_epilogue_candidate_executes_2d_matmul_plus_column_bias() {
 }
 
 #[test]
-#[ignore = "expensive CUDA functional candidate sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_gelu_bias_epilogue_candidate_executes_batched_matmul_plus_column_bias() {
-    let Some(stream) = get_cuda_stream() else {
+#[ignore = "expensive ROCm functional candidate sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_gelu_bias_epilogue_candidate_executes_batched_matmul_plus_column_bias() {
+    let Some(stream) = get_rocm_stream() else {
         return;
     };
 
@@ -2183,12 +2183,12 @@ fn cublaslt_gelu_bias_epilogue_candidate_executes_batched_matmul_plus_column_bia
     let bias = cx.tensor(n);
     let bias_expanded = bias.expand_dim(0, m).expand_dim(0, batch);
     let out = (a.matmul(b) + bias_expanded).gelu().output();
-    let llir = extract_forced_cublaslt_llir_where(
+    let llir = extract_forced_hipblaslt_llir_where(
         &mut cx,
         "functional batched gelu column bias epilogue",
         |llir| {
-            cublaslt_epilogues(llir).contains(&"GELU_BIAS")
-                && cublaslt_matrix_order_tuples(llir).contains(&("COL", "COL", "COL", "COL"))
+            hipblaslt_epilogues(llir).contains(&"GELU_BIAS")
+                && hipblaslt_matrix_order_tuples(llir).contains(&("COL", "COL", "COL", "COL"))
         },
     );
 
@@ -2215,9 +2215,9 @@ fn cublaslt_gelu_bias_epilogue_candidate_executes_batched_matmul_plus_column_bia
 }
 
 #[test]
-#[ignore = "expensive CUDA functional candidate sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_relu_epilogue_candidate_executes_2d_matmul() {
-    let Some(stream) = get_cuda_stream() else {
+#[ignore = "expensive ROCm functional candidate sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_relu_epilogue_candidate_executes_2d_matmul() {
+    let Some(stream) = get_rocm_stream() else {
         return;
     };
 
@@ -2226,8 +2226,8 @@ fn cublaslt_relu_epilogue_candidate_executes_2d_matmul() {
     let a = cx.tensor((m, k));
     let b = cx.tensor((k, n));
     let out = a.matmul(b).relu().output();
-    let llir = extract_forced_cublaslt_llir_where(&mut cx, "functional relu epilogue", |llir| {
-        cublaslt_epilogues(llir).contains(&"RELU")
+    let llir = extract_forced_hipblaslt_llir_where(&mut cx, "functional relu epilogue", |llir| {
+        hipblaslt_epilogues(llir).contains(&"RELU")
     });
 
     let a_data = random_f32_vec(m * k, 0x5E1F_2EDA, -1.0, 1.0);
@@ -2244,9 +2244,9 @@ fn cublaslt_relu_epilogue_candidate_executes_2d_matmul() {
 }
 
 #[test]
-#[ignore = "expensive CUDA functional candidate sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_relu_epilogue_candidate_executes_batched_matmul() {
-    let Some(stream) = get_cuda_stream() else {
+#[ignore = "expensive ROCm functional candidate sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_relu_epilogue_candidate_executes_batched_matmul() {
+    let Some(stream) = get_rocm_stream() else {
         return;
     };
 
@@ -2256,8 +2256,8 @@ fn cublaslt_relu_epilogue_candidate_executes_batched_matmul() {
     let b = cx.tensor((batch, k, n));
     let out = a.matmul(b).relu().output();
     let llir =
-        extract_forced_cublaslt_llir_where(&mut cx, "functional batched relu epilogue", |llir| {
-            cublaslt_epilogues(llir).contains(&"RELU")
+        extract_forced_hipblaslt_llir_where(&mut cx, "functional batched relu epilogue", |llir| {
+            hipblaslt_epilogues(llir).contains(&"RELU")
         });
 
     let a_data = random_f32_vec(batch * m * k, 0xBA7C_2EDA, -1.0, 1.0);
@@ -2277,9 +2277,9 @@ fn cublaslt_relu_epilogue_candidate_executes_batched_matmul() {
 }
 
 #[test]
-#[ignore = "expensive CUDA functional candidate sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_row_order_beta_one_candidate_executes_2d_layout_pairs() {
-    let Some(stream) = get_cuda_stream() else {
+#[ignore = "expensive ROCm functional candidate sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_row_order_beta_one_candidate_executes_2d_layout_pairs() {
+    let Some(stream) = get_rocm_stream() else {
         return;
     };
 
@@ -2304,9 +2304,9 @@ fn cublaslt_row_order_beta_one_candidate_executes_2d_layout_pairs() {
         };
         let out = (a.matmul(b) + c).output();
         let expected_orders = row_order_tuple(case);
-        let llir = extract_forced_cublaslt_llir_where(&mut cx, case.name, |llir| {
-            cublaslt_matrix_order_tuples(llir).contains(&expected_orders)
-                && cublaslt_scale_value_tuples(llir).contains(&(1.0, 1.0))
+        let llir = extract_forced_hipblaslt_llir_where(&mut cx, case.name, |llir| {
+            hipblaslt_matrix_order_tuples(llir).contains(&expected_orders)
+                && hipblaslt_scale_value_tuples(llir).contains(&(1.0, 1.0))
         });
 
         let a_data = random_f32_vec(m * k, 0xE21A_0000 + case_seed(case), -0.5, 0.5);
@@ -2327,9 +2327,9 @@ fn cublaslt_row_order_beta_one_candidate_executes_2d_layout_pairs() {
 }
 
 #[test]
-#[ignore = "expensive CUDA functional candidate sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_row_order_beta_one_candidate_executes_batched_row_major_matmul_plus_c() {
-    let Some(stream) = get_cuda_stream() else {
+#[ignore = "expensive ROCm functional candidate sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_row_order_beta_one_candidate_executes_batched_row_major_matmul_plus_c() {
+    let Some(stream) = get_rocm_stream() else {
         return;
     };
 
@@ -2341,9 +2341,9 @@ fn cublaslt_row_order_beta_one_candidate_executes_batched_row_major_matmul_plus_
     let out = (a.matmul(b) + c).output();
     let expected_orders = ("ROW", "ROW", "ROW", "ROW");
     let llir =
-        extract_forced_cublaslt_llir_where(&mut cx, "batched row-order beta=1 row-major", |llir| {
-            cublaslt_matrix_order_tuples(llir).contains(&expected_orders)
-                && cublaslt_scale_value_tuples(llir).contains(&(1.0, 1.0))
+        extract_forced_hipblaslt_llir_where(&mut cx, "batched row-order beta=1 row-major", |llir| {
+            hipblaslt_matrix_order_tuples(llir).contains(&expected_orders)
+                && hipblaslt_scale_value_tuples(llir).contains(&(1.0, 1.0))
         });
 
     let a_data = random_f32_vec(batch * m * k, 0xBA7C_E21A, -0.5, 0.5);
@@ -2363,9 +2363,9 @@ fn cublaslt_row_order_beta_one_candidate_executes_batched_row_major_matmul_plus_
 }
 
 #[test]
-#[ignore = "expensive CUDA functional candidate sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_row_order_candidate_executes_2d_layout_pairs() {
-    let Some(stream) = get_cuda_stream() else {
+#[ignore = "expensive ROCm functional candidate sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_row_order_candidate_executes_2d_layout_pairs() {
+    let Some(stream) = get_rocm_stream() else {
         return;
     };
 
@@ -2389,9 +2389,9 @@ fn cublaslt_row_order_candidate_executes_2d_layout_pairs() {
         };
         let out = a.matmul(b).output();
         let expected_orders = row_order_tuple(case);
-        let llir = extract_forced_cublaslt_llir_where(&mut cx, case.name, |llir| {
-            cublaslt_matrix_order_tuples(llir).contains(&expected_orders)
-                && cublaslt_scale_value_tuples(llir).contains(&(1.0, 0.0))
+        let llir = extract_forced_hipblaslt_llir_where(&mut cx, case.name, |llir| {
+            hipblaslt_matrix_order_tuples(llir).contains(&expected_orders)
+                && hipblaslt_scale_value_tuples(llir).contains(&(1.0, 0.0))
         });
 
         let a_data = random_f32_vec(m * k, 0xE20A_0000 + case_seed(case), -0.5, 0.5);
@@ -2409,9 +2409,9 @@ fn cublaslt_row_order_candidate_executes_2d_layout_pairs() {
 }
 
 #[test]
-#[ignore = "large row-order CUDA functional repro for llama lm_head shape"]
-fn cublaslt_row_order_candidate_executes_large_lm_head_like_projection() {
-    let Some(stream) = get_cuda_stream() else {
+#[ignore = "large row-order ROCm functional repro for llama lm_head shape"]
+fn hipblaslt_row_order_candidate_executes_large_lm_head_like_projection() {
+    let Some(stream) = get_rocm_stream() else {
         return;
     };
 
@@ -2422,9 +2422,9 @@ fn cublaslt_row_order_candidate_executes_large_lm_head_like_projection() {
     let b = b_input.t();
     let out = a.matmul(b).output();
     let expected_orders = ("ROW", "COL", "ROW", "ROW");
-    let llir = extract_forced_cublaslt_llir_where(&mut cx, "lm_head-like row-order", |llir| {
-        cublaslt_matrix_order_tuples(llir).contains(&expected_orders)
-            && cublaslt_scale_value_tuples(llir).contains(&(1.0, 0.0))
+    let llir = extract_forced_hipblaslt_llir_where(&mut cx, "lm_head-like row-order", |llir| {
+        hipblaslt_matrix_order_tuples(llir).contains(&expected_orders)
+            && hipblaslt_scale_value_tuples(llir).contains(&(1.0, 0.0))
     });
 
     let a_data = random_f32_vec(m * k, 0x1A11_A000, -0.5, 0.5);
@@ -2448,9 +2448,9 @@ fn cublaslt_row_order_candidate_executes_large_lm_head_like_projection() {
 }
 
 #[test]
-#[ignore = "large row-order CUDA functional repro for llama MLP residual beta=1 shape"]
-fn cublaslt_row_order_beta_one_candidate_executes_llama_mlp_residual_like_projection() {
-    let Some(stream) = get_cuda_stream() else {
+#[ignore = "large row-order ROCm functional repro for llama MLP residual beta=1 shape"]
+fn hipblaslt_row_order_beta_one_candidate_executes_llama_mlp_residual_like_projection() {
+    let Some(stream) = get_rocm_stream() else {
         return;
     };
 
@@ -2462,9 +2462,9 @@ fn cublaslt_row_order_beta_one_candidate_executes_llama_mlp_residual_like_projec
     let c = cx.tensor((m, n));
     let out = (a.matmul(b) + c).output();
     let expected_orders = ("ROW", "COL", "ROW", "ROW");
-    let llir = extract_forced_cublaslt_llir_where(&mut cx, "mlp residual row-order", |llir| {
-        cublaslt_matrix_order_tuples(llir).contains(&expected_orders)
-            && cublaslt_scale_value_tuples(llir).contains(&(1.0, 1.0))
+    let llir = extract_forced_hipblaslt_llir_where(&mut cx, "mlp residual row-order", |llir| {
+        hipblaslt_matrix_order_tuples(llir).contains(&expected_orders)
+            && hipblaslt_scale_value_tuples(llir).contains(&(1.0, 1.0))
     });
 
     let a_data = random_f32_vec(m * k, 0x1A12_A000, -0.5, 0.5);
@@ -2488,9 +2488,9 @@ fn cublaslt_row_order_beta_one_candidate_executes_llama_mlp_residual_like_projec
 }
 
 #[test]
-#[ignore = "expensive CUDA functional candidate sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
-fn cublaslt_row_order_candidate_executes_batched_row_major_matmul() {
-    let Some(stream) = get_cuda_stream() else {
+#[ignore = "expensive ROCm functional candidate sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+fn hipblaslt_row_order_candidate_executes_batched_row_major_matmul() {
+    let Some(stream) = get_rocm_stream() else {
         return;
     };
 
@@ -2500,9 +2500,9 @@ fn cublaslt_row_order_candidate_executes_batched_row_major_matmul() {
     let b = cx.tensor((batch, k, n));
     let out = a.matmul(b).output();
     let expected_orders = ("ROW", "ROW", "ROW", "ROW");
-    let llir = extract_forced_cublaslt_llir_where(&mut cx, "batched row-order row-major", |llir| {
-        cublaslt_matrix_order_tuples(llir).contains(&expected_orders)
-            && cublaslt_scale_value_tuples(llir).contains(&(1.0, 0.0))
+    let llir = extract_forced_hipblaslt_llir_where(&mut cx, "batched row-order row-major", |llir| {
+        hipblaslt_matrix_order_tuples(llir).contains(&expected_orders)
+            && hipblaslt_scale_value_tuples(llir).contains(&(1.0, 0.0))
     });
 
     let a_data = random_f32_vec(batch * m * k, 0xBA7C_E20A, -0.5, 0.5);
@@ -2889,12 +2889,12 @@ fn build_batched_matmul_gelu_graph(case: LayoutCase, dtype: DType) -> Graph {
     build_same_dtype_batched_graph(case, dtype, |_, a, b, _, _, _, _| a.matmul(b).gelu())
 }
 
-fn extract_forced_cublaslt_llir(mut cx: Graph, case_name: &str) -> LLIRGraph {
-    extract_forced_cublaslt_llir_where(&mut cx, case_name, |_| true)
+fn extract_forced_hipblaslt_llir(mut cx: Graph, case_name: &str) -> LLIRGraph {
+    extract_forced_hipblaslt_llir_where(&mut cx, case_name, |_| true)
 }
 
-fn assert_cublaslt_rewrite(mut cx: Graph, case_name: &str, matches: impl Fn(&LLIRGraph) -> bool) {
-    let _llir = extract_forced_cublaslt_llir_where(&mut cx, case_name, matches);
+fn assert_hipblaslt_rewrite(mut cx: Graph, case_name: &str, matches: impl Fn(&LLIRGraph) -> bool) {
+    let _llir = extract_forced_hipblaslt_llir_where(&mut cx, case_name, matches);
 }
 
 fn llir_has_epilogue_with_orders(
@@ -2902,36 +2902,36 @@ fn llir_has_epilogue_with_orders(
     epilogue: &str,
     orders: Option<HipblasLtMatrixOrders>,
 ) -> bool {
-    cublaslt_epilogues(llir).contains(&epilogue)
+    hipblaslt_epilogues(llir).contains(&epilogue)
         && match orders {
-            Some(expected_orders) => cublaslt_matrix_order_tuples(llir).contains(&expected_orders),
+            Some(expected_orders) => hipblaslt_matrix_order_tuples(llir).contains(&expected_orders),
             None => true,
         }
 }
 
-fn assert_cublaslt_epilogue_rewrite(
+fn assert_hipblaslt_epilogue_rewrite(
     cx: Graph,
     case_name: &str,
     epilogue: &str,
     orders: Option<HipblasLtMatrixOrders>,
 ) {
-    assert_cublaslt_rewrite(cx, case_name, |llir| {
+    assert_hipblaslt_rewrite(cx, case_name, |llir| {
         llir_has_epilogue_with_orders(llir, epilogue, orders)
     });
 }
 
-fn assert_no_forced_cublaslt_epilogue_rewrite(
+fn assert_no_forced_hipblaslt_epilogue_rewrite(
     mut cx: Graph,
     case_name: &str,
     epilogue: &str,
     orders: Option<HipblasLtMatrixOrders>,
 ) {
-    assert_no_forced_cublaslt_llir_where(&mut cx, case_name, |llir| {
+    assert_no_forced_hipblaslt_llir_where(&mut cx, case_name, |llir| {
         llir_has_epilogue_with_orders(llir, epilogue, orders)
     });
 }
 
-fn extract_forced_cublaslt_llir_where(
+fn extract_forced_hipblaslt_llir_where(
     cx: &mut Graph,
     case_name: &str,
     matches: impl Fn(&LLIRGraph) -> bool,
@@ -2942,18 +2942,18 @@ fn extract_forced_cublaslt_llir_where(
     let ops = cx
         .egglog_ops()
         .expect("search space should have registered egglog ops");
-    let cublaslt_nodes = cublaslt_ir_nodes(egraph);
+    let hipblaslt_nodes = hipblaslt_ir_nodes(egraph);
     assert!(
-        !cublaslt_nodes.is_empty(),
-        "expected a cublasLt rewrite candidate for {case_name}, but no cublaslt Op appeared"
+        !hipblaslt_nodes.is_empty(),
+        "expected a hipblasLt rewrite candidate for {case_name}, but no hipblaslt Op appeared"
     );
 
     let mut last_error = None;
-    for (idx, cublaslt_node) in cublaslt_nodes.iter().enumerate() {
+    for (idx, hipblaslt_node) in hipblaslt_nodes.iter().enumerate() {
         let mut rng = StdRng::seed_from_u64(0x00C0_B1A5 + idx as u64);
         let mut choices = random_initial_choice(egraph, &mut rng);
-        let cublaslt_class = &egraph.node_to_class[*cublaslt_node];
-        choices.insert(cublaslt_class, cublaslt_node);
+        let hipblaslt_class = &egraph.node_to_class[*hipblaslt_node];
+        choices.insert(hipblaslt_class, hipblaslt_node);
 
         if let Err(err) = validate_choice_set(egraph, &choices, ops) {
             last_error = Some(err);
@@ -2972,12 +2972,12 @@ fn extract_forced_cublaslt_llir_where(
             None,
         );
 
-        if !cublaslt_type_tuples(&llir).is_empty() && matches(&llir) {
+        if !hipblaslt_type_tuples(&llir).is_empty() && matches(&llir) {
             return llir;
         }
 
         last_error =
-            Some("forced cublaslt candidate did not satisfy requested extracted shape".into());
+            Some("forced hipblaslt candidate did not satisfy requested extracted shape".into());
     }
 
     panic!(
@@ -2986,7 +2986,7 @@ fn extract_forced_cublaslt_llir_where(
     );
 }
 
-fn assert_no_forced_cublaslt_llir_where(
+fn assert_no_forced_hipblaslt_llir_where(
     cx: &mut Graph,
     case_name: &str,
     matches: impl Fn(&LLIRGraph) -> bool,
@@ -2997,17 +2997,17 @@ fn assert_no_forced_cublaslt_llir_where(
     let ops = cx
         .egglog_ops()
         .expect("search space should have registered egglog ops");
-    let cublaslt_nodes = cublaslt_ir_nodes(egraph);
+    let hipblaslt_nodes = hipblaslt_ir_nodes(egraph);
     assert!(
-        !cublaslt_nodes.is_empty(),
-        "expected at least the base cuBLASLt matmul candidate for {case_name}"
+        !hipblaslt_nodes.is_empty(),
+        "expected at least the base hipBLASLt matmul candidate for {case_name}"
     );
 
-    for (idx, cublaslt_node) in cublaslt_nodes.iter().enumerate() {
+    for (idx, hipblaslt_node) in hipblaslt_nodes.iter().enumerate() {
         let mut rng = StdRng::seed_from_u64(0xBAD_C0DE + idx as u64);
         let mut choices = random_initial_choice(egraph, &mut rng);
-        let cublaslt_class = &egraph.node_to_class[*cublaslt_node];
-        choices.insert(cublaslt_class, cublaslt_node);
+        let hipblaslt_class = &egraph.node_to_class[*hipblaslt_node];
+        choices.insert(hipblaslt_class, hipblaslt_node);
 
         if validate_choice_set(egraph, &choices, ops).is_err() {
             continue;
@@ -3026,16 +3026,16 @@ fn assert_no_forced_cublaslt_llir_where(
         );
 
         assert!(
-            !llir_has_cublaslt(&llir) || !matches(&llir),
-            "unexpected cuBLASLt candidate matched forbidden shape for {case_name}: types={:?}, scales={:?}, orders={:?}",
-            cublaslt_type_tuples(&llir),
-            cublaslt_scale_value_tuples(&llir),
-            cublaslt_matrix_order_tuples(&llir)
+            !llir_has_hipblaslt(&llir) || !matches(&llir),
+            "unexpected hipBLASLt candidate matched forbidden shape for {case_name}: types={:?}, scales={:?}, orders={:?}",
+            hipblaslt_type_tuples(&llir),
+            hipblaslt_scale_value_tuples(&llir),
+            hipblaslt_matrix_order_tuples(&llir)
         );
     }
 }
 
-fn assert_no_cublaslt_llir_where(
+fn assert_no_hipblaslt_llir_where(
     cx: &mut Graph,
     case_name: &str,
     matches: impl Fn(&LLIRGraph) -> bool,
@@ -3047,11 +3047,11 @@ fn assert_no_cublaslt_llir_where(
         .egglog_ops()
         .expect("search space should have registered egglog ops");
 
-    for (idx, cublaslt_node) in cublaslt_ir_nodes(egraph).iter().enumerate() {
+    for (idx, hipblaslt_node) in hipblaslt_ir_nodes(egraph).iter().enumerate() {
         let mut rng = StdRng::seed_from_u64(0xBAD_C0DE + idx as u64);
         let mut choices = random_initial_choice(egraph, &mut rng);
-        let cublaslt_class = &egraph.node_to_class[*cublaslt_node];
-        choices.insert(cublaslt_class, cublaslt_node);
+        let hipblaslt_class = &egraph.node_to_class[*hipblaslt_node];
+        choices.insert(hipblaslt_class, hipblaslt_node);
 
         if validate_choice_set(egraph, &choices, ops).is_err() {
             continue;
@@ -3070,20 +3070,20 @@ fn assert_no_cublaslt_llir_where(
         );
 
         assert!(
-            !llir_has_cublaslt(&llir) || !matches(&llir),
-            "unexpected cuBLASLt candidate matched forbidden shape for {case_name}: types={:?}, scales={:?}, orders={:?}, transposes={:?}",
-            cublaslt_type_tuples(&llir),
-            cublaslt_scale_value_tuples(&llir),
-            cublaslt_matrix_order_tuples(&llir),
-            cublaslt_transpose_op_tuples(&llir)
+            !llir_has_hipblaslt(&llir) || !matches(&llir),
+            "unexpected hipBLASLt candidate matched forbidden shape for {case_name}: types={:?}, scales={:?}, orders={:?}, transposes={:?}",
+            hipblaslt_type_tuples(&llir),
+            hipblaslt_scale_value_tuples(&llir),
+            hipblaslt_matrix_order_tuples(&llir),
+            hipblaslt_transpose_op_tuples(&llir)
         );
     }
 }
 
-fn cublaslt_ir_nodes(egraph: &SerializedEGraph) -> Vec<&NodeId> {
-    op_ir_nodes(egraph, "cublaslt")
+fn hipblaslt_ir_nodes(egraph: &SerializedEGraph) -> Vec<&NodeId> {
+    op_ir_nodes(egraph, "hipblaslt")
         .into_iter()
-        .chain(op_ir_nodes(egraph, "cublaslt_scaled"))
+        .chain(op_ir_nodes(egraph, "hipblaslt_scaled"))
         .collect()
 }
 
@@ -3108,15 +3108,15 @@ fn op_ir_nodes<'a>(egraph: &'a SerializedEGraph, kind_label: &str) -> Vec<&'a No
         .collect()
 }
 
-fn dataflow_reachable_cublaslt_scaled_count(egraph: &SerializedEGraph) -> usize {
-    dataflow_reachable_cublaslt_count(egraph, true)
+fn dataflow_reachable_hipblaslt_scaled_count(egraph: &SerializedEGraph) -> usize {
+    dataflow_reachable_hipblaslt_count(egraph, true)
 }
 
-fn dataflow_reachable_cublaslt_raw_fp8_count(egraph: &SerializedEGraph) -> usize {
-    dataflow_reachable_cublaslt_count(egraph, false)
+fn dataflow_reachable_hipblaslt_raw_fp8_count(egraph: &SerializedEGraph) -> usize {
+    dataflow_reachable_hipblaslt_count(egraph, false)
 }
 
-fn dataflow_reachable_cublaslt_count(egraph: &SerializedEGraph, scaled: bool) -> usize {
+fn dataflow_reachable_hipblaslt_count(egraph: &SerializedEGraph, scaled: bool) -> usize {
     let reachable = dataflow_reachable_ir_classes(egraph);
     egraph
         .enodes
@@ -3132,9 +3132,9 @@ fn dataflow_reachable_cublaslt_count(egraph: &SerializedEGraph, scaled: bool) ->
                             kind_nodes.iter().any(|kind_node| {
                                 egraph.enodes.get(kind_node).is_some_and(|(kind_label, _)| {
                                     if scaled {
-                                        kind_label == "cublaslt_scaled"
+                                        kind_label == "hipblaslt_scaled"
                                     } else {
-                                        kind_label == "cublaslt"
+                                        kind_label == "hipblaslt"
                                     }
                                 })
                             })
@@ -3189,39 +3189,39 @@ fn dataflow_reachable_ir_classes(egraph: &SerializedEGraph) -> FxHashSet<ClassId
     reachable
 }
 
-fn llir_has_cublaslt(llir: &LLIRGraph) -> bool {
-    !cublaslt_type_tuples(llir).is_empty()
+fn llir_has_hipblaslt(llir: &LLIRGraph) -> bool {
+    !hipblaslt_type_tuples(llir).is_empty()
 }
 
-fn cublaslt_type_tuples(llir: &LLIRGraph) -> Vec<HipblasLtTypeTuple> {
+fn hipblaslt_type_tuples(llir: &LLIRGraph) -> Vec<HipblasLtTypeTuple> {
     llir.node_weights()
         .filter_map(|op| op.to_dialect::<dyn HostOp>())
         .filter_map(|host_op| hipblaslt_type_tuple(host_op.as_ref().as_ref()))
         .collect()
 }
 
-fn cublaslt_scale_value_tuples(llir: &LLIRGraph) -> Vec<HipblasLtScaleValues> {
+fn hipblaslt_scale_value_tuples(llir: &LLIRGraph) -> Vec<HipblasLtScaleValues> {
     llir.node_weights()
         .filter_map(|op| op.to_dialect::<dyn HostOp>())
         .filter_map(|host_op| hipblaslt_scale_values(host_op.as_ref().as_ref()))
         .collect()
 }
 
-fn cublaslt_tensor_scale_input_tuples(llir: &LLIRGraph) -> Vec<(bool, bool)> {
+fn hipblaslt_tensor_scale_input_tuples(llir: &LLIRGraph) -> Vec<(bool, bool)> {
     llir.node_weights()
         .filter_map(|op| op.to_dialect::<dyn HostOp>())
         .filter_map(|host_op| hipblaslt_tensor_scale_inputs(host_op.as_ref().as_ref()))
         .collect()
 }
 
-fn cublaslt_epilogues(llir: &LLIRGraph) -> Vec<&'static str> {
+fn hipblaslt_epilogues(llir: &LLIRGraph) -> Vec<&'static str> {
     llir.node_weights()
         .filter_map(|op| op.to_dialect::<dyn HostOp>())
         .filter_map(|host_op| hipblaslt_epilogue(host_op.as_ref().as_ref()))
         .collect()
 }
 
-fn cublaslt_epilogue_scale_tuples(llir: &LLIRGraph) -> Vec<(&'static str, HipblasLtScaleValues)> {
+fn hipblaslt_epilogue_scale_tuples(llir: &LLIRGraph) -> Vec<(&'static str, HipblasLtScaleValues)> {
     llir.node_weights()
         .filter_map(|op| op.to_dialect::<dyn HostOp>())
         .filter_map(|host_op| {
@@ -3231,21 +3231,21 @@ fn cublaslt_epilogue_scale_tuples(llir: &LLIRGraph) -> Vec<(&'static str, Hipbla
         .collect()
 }
 
-fn cublaslt_matrix_order_tuples(llir: &LLIRGraph) -> Vec<HipblasLtMatrixOrders> {
+fn hipblaslt_matrix_order_tuples(llir: &LLIRGraph) -> Vec<HipblasLtMatrixOrders> {
     llir.node_weights()
         .filter_map(|op| op.to_dialect::<dyn HostOp>())
         .filter_map(|host_op| hipblaslt_matrix_orders(host_op.as_ref().as_ref()))
         .collect()
 }
 
-fn cublaslt_transpose_op_tuples(llir: &LLIRGraph) -> Vec<CublasLtTransposeOps> {
+fn hipblaslt_transpose_op_tuples(llir: &LLIRGraph) -> Vec<HipblasLtTransposeOps> {
     llir.node_weights()
         .filter_map(|op| op.to_dialect::<dyn HostOp>())
         .filter_map(|host_op| hipblaslt_transpose_ops(host_op.as_ref().as_ref()))
         .collect()
 }
 
-fn cublaslt_c_d_layout_matches(llir: &LLIRGraph) -> Vec<bool> {
+fn hipblaslt_c_d_layout_matches(llir: &LLIRGraph) -> Vec<bool> {
     llir.node_weights()
         .filter_map(|op| op.to_dialect::<dyn HostOp>())
         .filter_map(|host_op| hipblaslt_c_d_layouts_match(host_op.as_ref().as_ref()))

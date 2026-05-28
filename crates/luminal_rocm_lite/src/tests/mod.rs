@@ -7,9 +7,10 @@ mod consumed_buffer_tests;
 #[cfg(test)]
 mod conv2d_rewrite;
 #[cfg(test)]
-mod cublaslt_rewrite_tests;
-#[cfg(test)]
-mod flashinfer;
+mod hipblaslt_rewrite_tests;
+// flashinfer host op is NVIDIA-only — no rocmrc analog yet.
+// #[cfg(test)]
+// mod flashinfer;
 #[cfg(test)]
 mod fusion;
 #[cfg(test)]
@@ -18,8 +19,9 @@ mod model_fuzz;
 mod op_functional_tests;
 #[cfg(test)]
 mod performance_tests;
-#[cfg(test)]
-mod qwen3_moe_rewrite;
+// MoE host op (host/moe) not yet ported to rocmrc.
+// #[cfg(test)]
+// mod qwen3_moe_rewrite;
 #[cfg(test)]
 mod rope_test;
 #[cfg(test)]

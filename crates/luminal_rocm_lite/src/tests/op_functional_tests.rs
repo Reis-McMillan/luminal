@@ -1,5 +1,5 @@
 use candle_core::{Device, Tensor};
-use cudarc::driver::CudaContext;
+use rocmrc::HipContext;
 use luminal::prelude::*;
 use proptest::prelude::*;
 
@@ -12,7 +12,7 @@ use crate::runtime::RocmRuntime;
 #[allow(unused_imports)]
 use super::utilities::{
     GENOME_FUZZ_COUNT, TOLERANCE_SAFETY_FACTOR, assert_close, dtype_epsilon, fuzz_genomes,
-    gen_slice_range, get_cuda_stream, gpu_supports_dtype, random_f32_vec, random_i32_vec,
+    gen_slice_range, get_rocm_stream, gpu_supports_dtype, random_f32_vec, random_i32_vec,
     test_binary_cuda, test_mod, test_unary_cuda, to_candle_dtype,
 };
 
@@ -253,7 +253,7 @@ fn run_argsort_test(rows: usize, cols: usize, seed: u64) {
         })
         .collect();
 
-    let ctx = CudaContext::new(0).unwrap();
+    let ctx = HipContext::new(0).unwrap();
     ctx.bind_to_thread().unwrap();
     let stream = ctx.default_stream();
     cx.build_search_space::<RocmRuntime>();
@@ -406,7 +406,7 @@ fn fuzz_test_cuda_genomes_impl(seed: u64) {
     use rand::SeedableRng;
     use rand::rngs::StdRng;
 
-    let Some(stream) = get_cuda_stream() else {
+    let Some(stream) = get_rocm_stream() else {
         println!("CUDA not available, skipping test");
         return;
     };
@@ -577,7 +577,7 @@ proptest! {
 }
 
 fn run_embed_test(vocab_size: usize, embed_dim: usize, seq_len: usize, seed: u64) {
-    let Some(stream) = get_cuda_stream() else {
+    let Some(stream) = get_rocm_stream() else {
         println!("CUDA not available, skipping test");
         return;
     };

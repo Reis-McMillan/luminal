@@ -1,4 +1,4 @@
-use cudarc::driver::CudaContext;
+use rocmrc::driver::HipContext;
 use luminal::prelude::*;
 use luminal_nn::{gather_rows, scatter_rows};
 use rand::SeedableRng;
@@ -46,7 +46,7 @@ fn extract_all_kernel_names(cx: &mut Graph) -> Vec<String> {
 /// be the only scatter variant left after post-cleanup.
 #[test]
 fn test_scatter_nocopy_selected_when_dest_unshared() {
-    let ctx = CudaContext::new(0).unwrap();
+    let ctx = HipContext::new(0).unwrap();
     ctx.bind_to_thread().unwrap();
 
     let mut cx = Graph::default();
@@ -80,7 +80,7 @@ fn test_scatter_nocopy_selected_when_dest_unshared() {
 /// invalid, so it should NOT appear in any extraction.
 #[test]
 fn test_scatter_nocopy_not_selected_when_dest_shared() {
-    let ctx = CudaContext::new(0).unwrap();
+    let ctx = HipContext::new(0).unwrap();
     ctx.bind_to_thread().unwrap();
 
     let mut cx = Graph::default();
@@ -119,7 +119,7 @@ fn test_scatter_nocopy_not_selected_when_dest_shared() {
 /// miss the unsafe read if cleanup only inspected the head of the input list.
 #[test]
 fn test_scatter_nocopy_not_selected_when_dest_shared_as_later_input() {
-    let ctx = CudaContext::new(0).unwrap();
+    let ctx = HipContext::new(0).unwrap();
     ctx.bind_to_thread().unwrap();
 
     let mut cx = Graph::default();
@@ -154,7 +154,7 @@ fn test_scatter_nocopy_not_selected_when_dest_shared_as_later_input() {
 /// copy-then-scatter materialization.
 #[test]
 fn test_scatter_nocopy_not_selected_for_expanded_dest_layout() {
-    let ctx = CudaContext::new(0).unwrap();
+    let ctx = HipContext::new(0).unwrap();
     ctx.bind_to_thread().unwrap();
 
     let mut cx = Graph::default();
@@ -184,7 +184,7 @@ fn test_scatter_nocopy_not_selected_for_expanded_dest_layout() {
 /// Post-cleanup should force the valid no-copy extraction.
 #[test]
 fn test_scatter_execution_correctness() {
-    let ctx = CudaContext::new(0).unwrap();
+    let ctx = HipContext::new(0).unwrap();
     ctx.bind_to_thread().unwrap();
     let stream = ctx.default_stream();
 
@@ -278,7 +278,7 @@ fn test_scatter_execution_correctness() {
 /// This mimics how the llama model uses scatter for KV cache updates.
 #[test]
 fn test_scatter_kv_cache_roundtrip() {
-    let ctx = CudaContext::new(0).unwrap();
+    let ctx = HipContext::new(0).unwrap();
     ctx.bind_to_thread().unwrap();
     let stream = ctx.default_stream();
 
@@ -384,7 +384,7 @@ fn test_scatter_kv_cache_roundtrip() {
 /// Test scatter with TWO cache buffers and dual outputs (closer to llama K+V pattern).
 #[test]
 fn test_scatter_dual_cache() {
-    let ctx = CudaContext::new(0).unwrap();
+    let ctx = HipContext::new(0).unwrap();
     ctx.bind_to_thread().unwrap();
     let stream = ctx.default_stream();
 
@@ -511,7 +511,7 @@ fn test_scatter_dual_cache() {
 /// the path decode does not exercise when it scatters one token at a time.
 #[test]
 fn test_scatter_rows_dynamic_prefill_roundtrip() {
-    let ctx = CudaContext::new(0).unwrap();
+    let ctx = HipContext::new(0).unwrap();
     ctx.bind_to_thread().unwrap();
     let stream = ctx.default_stream();
 
@@ -687,7 +687,7 @@ fn gqa_expand_v(
 
 #[test]
 fn test_tiny_gqa_attention_batched_matches_sequential_prefill() {
-    let ctx = CudaContext::new(0).unwrap();
+    let ctx = HipContext::new(0).unwrap();
     ctx.bind_to_thread().unwrap();
     let stream = ctx.default_stream();
 
@@ -813,7 +813,7 @@ fn test_tiny_gqa_attention_batched_matches_sequential_prefill() {
 
 #[test]
 fn test_original_gqa_attention_batched_matches_sequential_prefill() {
-    let ctx = CudaContext::new(0).unwrap();
+    let ctx = HipContext::new(0).unwrap();
     ctx.bind_to_thread().unwrap();
     let stream = ctx.default_stream();
 
@@ -912,7 +912,7 @@ fn test_original_gqa_attention_batched_matches_sequential_prefill() {
 
 #[test]
 fn test_dynamic_expanded_causal_mask_softmax() {
-    let ctx = CudaContext::new(0).unwrap();
+    let ctx = HipContext::new(0).unwrap();
     ctx.bind_to_thread().unwrap();
     let stream = ctx.default_stream();
 
@@ -959,7 +959,7 @@ fn test_dynamic_expanded_causal_mask_softmax() {
 
 #[test]
 fn test_tiny_gqa_value_matmul_with_expanded_kv() {
-    let ctx = CudaContext::new(0).unwrap();
+    let ctx = HipContext::new(0).unwrap();
     ctx.bind_to_thread().unwrap();
     let stream = ctx.default_stream();
 
@@ -1035,7 +1035,7 @@ fn test_tiny_gqa_value_matmul_with_expanded_kv() {
 
 #[test]
 fn test_broadcast_merge_gqa_value_matmul_matches_cpu() {
-    let ctx = CudaContext::new(0).unwrap();
+    let ctx = HipContext::new(0).unwrap();
     ctx.bind_to_thread().unwrap();
     let stream = ctx.default_stream();
 
@@ -1101,7 +1101,7 @@ fn test_broadcast_merge_gqa_value_matmul_matches_cpu() {
 
 #[test]
 fn test_transpose_merge_split_roundtrip_matches_cpu() {
-    let ctx = CudaContext::new(0).unwrap();
+    let ctx = HipContext::new(0).unwrap();
     ctx.bind_to_thread().unwrap();
     let stream = ctx.default_stream();
 
@@ -1138,7 +1138,7 @@ fn test_transpose_merge_split_roundtrip_matches_cpu() {
 
 #[test]
 fn test_batched_moe_x_expand_matmul_matches_cpu() {
-    let ctx = CudaContext::new(0).unwrap();
+    let ctx = HipContext::new(0).unwrap();
     ctx.bind_to_thread().unwrap();
     let stream = ctx.default_stream();
 
@@ -1198,7 +1198,7 @@ fn test_batched_moe_x_expand_matmul_matches_cpu() {
 
 #[test]
 fn test_batched_topk_axis1_matches_cpu() {
-    let ctx = CudaContext::new(0).unwrap();
+    let ctx = HipContext::new(0).unwrap();
     ctx.bind_to_thread().unwrap();
     let stream = ctx.default_stream();
 
@@ -1238,7 +1238,7 @@ fn test_batched_topk_axis1_matches_cpu() {
 
 #[test]
 fn test_batched_argsort_axis1_matches_cpu() {
-    let ctx = CudaContext::new(0).unwrap();
+    let ctx = HipContext::new(0).unwrap();
     ctx.bind_to_thread().unwrap();
     let stream = ctx.default_stream();
 
@@ -1277,7 +1277,7 @@ fn test_batched_argsort_axis1_matches_cpu() {
 
 #[test]
 fn test_dynamic_3d_sum_axis1_matches_cpu() {
-    let ctx = CudaContext::new(0).unwrap();
+    let ctx = HipContext::new(0).unwrap();
     ctx.bind_to_thread().unwrap();
     let stream = ctx.default_stream();
 
@@ -1324,7 +1324,7 @@ fn test_dynamic_3d_sum_axis1_matches_cpu() {
 
 #[test]
 fn test_batched_argsort_ranks_axis1_matches_cpu() {
-    let ctx = CudaContext::new(0).unwrap();
+    let ctx = HipContext::new(0).unwrap();
     ctx.bind_to_thread().unwrap();
     let stream = ctx.default_stream();
 
@@ -1375,7 +1375,7 @@ fn test_batched_argsort_ranks_axis1_matches_cpu() {
 
 #[test]
 fn test_dynamic_3d_flat_index_iota_rows() {
-    let ctx = CudaContext::new(0).unwrap();
+    let ctx = HipContext::new(0).unwrap();
     ctx.bind_to_thread().unwrap();
     let stream = ctx.default_stream();
 
@@ -1412,7 +1412,7 @@ fn test_dynamic_3d_flat_index_iota_rows() {
 
 #[test]
 fn test_dynamic_2d_to_3d_gather_rows() {
-    let ctx = CudaContext::new(0).unwrap();
+    let ctx = HipContext::new(0).unwrap();
     ctx.bind_to_thread().unwrap();
     let stream = ctx.default_stream();
 
@@ -1455,7 +1455,7 @@ fn test_dynamic_2d_to_3d_gather_rows() {
 
 #[test]
 fn test_batched_gather_experts_matches_cpu() {
-    let ctx = CudaContext::new(0).unwrap();
+    let ctx = HipContext::new(0).unwrap();
     ctx.bind_to_thread().unwrap();
     let stream = ctx.default_stream();
 

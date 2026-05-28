@@ -167,18 +167,18 @@ impl EgglogOp for HipblasLt {
     fn rewrites(&self) -> Vec<Rule> {
         vec![
             Rule::raw(
-                "(relation hipblasLt_base_dtype (DType))
-                 (hipblasLt_base_dtype (F32))
-                 (hipblasLt_base_dtype (F16))
-                 (hipblasLt_base_dtype (Bf16))
-                 (hipblasLt_base_dtype (TF32))
-                 (relation hipblasLt_fp8_dtype (DType))
-                 (hipblasLt_fp8_dtype (F8E4M3))
-                 (hipblasLt_fp8_dtype (F8E5M2))
-                 (relation hipblasLt_fp8_f32_output_pair (DType DType))
-                 (hipblasLt_fp8_f32_output_pair (F8E4M3) (F8E4M3))
-                 (hipblasLt_fp8_f32_output_pair (F8E4M3) (F8E5M2))
-                 (hipblasLt_fp8_f32_output_pair (F8E5M2) (F8E4M3))",
+                "(relation hipblaslt_base_dtype (DType))
+                 (hipblaslt_base_dtype (F32))
+                 (hipblaslt_base_dtype (F16))
+                 (hipblaslt_base_dtype (Bf16))
+                 (hipblaslt_base_dtype (TF32))
+                 (relation hipblaslt_fp8_dtype (DType))
+                 (hipblaslt_fp8_dtype (F8E4M3))
+                 (hipblaslt_fp8_dtype (F8E5M2))
+                 (relation hipblaslt_fp8_f32_output_pair (DType DType))
+                 (hipblaslt_fp8_f32_output_pair (F8E4M3) (F8E4M3))
+                 (hipblaslt_fp8_f32_output_pair (F8E4M3) (F8E5M2))
+                 (hipblaslt_fp8_f32_output_pair (F8E5M2) (F8E4M3))",
             ),
             Rule::raw(include_str!["hipblaslt_RmRm_rewrite.egg"]), // row row
             Rule::raw(include_str!["hipblaslt_RmCm_rewrite.egg"]), // row col

@@ -191,20 +191,6 @@ fn read_hiprtc_log(program: hiprtc_sys::hiprtcProgram) -> Option<String> {
     if log.is_empty() { None } else { Some(log) }
 }
 
-#[allow(clippy::slow_vector_initialization)]
-fn get_rocbin(program: hiprtc_sys::hiprtcProgram) -> Result<Vec<u8>, HiprtcError> {
-    let mut rocbin_size = 0usize;
-    unsafe { hiprtc_sys::hiprtcGetBitcodeSize(program, &mut rocbin_size as *mut _) }.result()?;
-    if rocbin_size == 0 {
-        return Ok(Vec::new());
-    }
-
-    let mut cubin = Vec::with_capacity(rocbin_size);
-    cubin.resize(rocbin_size, 0u8);
-    unsafe { hiprtc_sys::hiprtcGetBitcodeSize(program, cubin.as_mut_ptr() as *mut _) }.result()?;
-    Ok(cubin)
-}
-
 pub(crate) fn compile_module_image_for_current_device<S: AsRef<str>>(
     ctx: &Arc<HipContext>,
     src: S,
@@ -239,8 +225,8 @@ pub(crate) fn compile_module_image_for_current_device<S: AsRef<str>>(
     }
 
     let hiprtc_log = read_hiprtc_log(program);
-    let rocbin = match get_rocbin(program) {
-        Ok(cubin) => cubin,
+    let rocbin = match hiprtc_result::get_code(program) {
+        Ok(code) => code,
         Err(error) => {
             let _ = hiprtc_result::destroy_program(program);
             return Err(build_module_image_compile_error(
@@ -250,7 +236,7 @@ pub(crate) fn compile_module_image_for_current_device<S: AsRef<str>>(
                 &hiprtc_options,
                 hiprtc_log,
                 RocmModuleImageCompileFailure::Hiprtc {
-                    stage: "get_cubin",
+                    stage: "get_code",
                     error,
                 },
             ));

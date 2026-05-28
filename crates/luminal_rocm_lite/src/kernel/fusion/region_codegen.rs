@@ -40,7 +40,7 @@ use as_any::Downcast;
 use crate::{
     compile_module_image_for_current_device, rocm_dtype,
     kernel::KernelOp,
-    kernel::fusion::elementwise::{CudaBinaryElementwise, CudaUnaryElementwise},
+    kernel::fusion::elementwise::{RocmBinaryElementwise, RocmUnaryElementwise},
     kernel::fusion::markers::{FusionEnd, FusionStart},
     kernel::hlir::{dtype_includes, generate_dyn_dims_defines},
 };
@@ -331,8 +331,8 @@ fn is_region_elementwise(llir_graph: &LLIRGraph, node: NodeIndex) -> bool {
         .node_weight(node)
         .and_then(|op| op.to_dialect::<dyn KernelOp>())
         .is_some_and(|op| {
-            (***op).downcast_ref::<CudaUnaryElementwise>().is_some()
-                || (***op).downcast_ref::<CudaBinaryElementwise>().is_some()
+            (***op).downcast_ref::<RocmUnaryElementwise>().is_some()
+                || (***op).downcast_ref::<RocmBinaryElementwise>().is_some()
         })
 }
 
@@ -415,11 +415,11 @@ pub(crate) fn compile_region(
     }
     for &elem_idx in &region.elementwise_topo {
         let elem_op = llir_graph[elem_idx].to_dialect::<dyn KernelOp>().unwrap();
-        if let Some(elem) = (***elem_op).downcast_ref::<CudaUnaryElementwise>() {
+        if let Some(elem) = (***elem_op).downcast_ref::<RocmUnaryElementwise>() {
             all_vars.extend(elem.shape.iter().flat_map(|e| e.dyn_vars()));
             all_vars.extend(elem.in_strides.iter().flat_map(|e| e.dyn_vars()));
             all_vars.extend(elem.out_strides.iter().flat_map(|e| e.dyn_vars()));
-        } else if let Some(elem) = (***elem_op).downcast_ref::<CudaBinaryElementwise>() {
+        } else if let Some(elem) = (***elem_op).downcast_ref::<RocmBinaryElementwise>() {
             all_vars.extend(elem.out_shape.iter().flat_map(|e| e.dyn_vars()));
             all_vars.extend(elem.a_stride.iter().flat_map(|e| e.dyn_vars()));
             all_vars.extend(elem.b_stride.iter().flat_map(|e| e.dyn_vars()));
@@ -492,9 +492,9 @@ pub(crate) fn compile_region(
     for &op_idx in &region.elementwise_topo {
         let op_ref = llir_graph[op_idx].to_dialect::<dyn KernelOp>().unwrap();
         let (elem_name, elem_dtype) =
-            if let Some(elem) = (***op_ref).downcast_ref::<CudaUnaryElementwise>() {
+            if let Some(elem) = (***op_ref).downcast_ref::<RocmUnaryElementwise>() {
                 (elem.op.as_str(), elem.dtype)
-            } else if let Some(elem) = (***op_ref).downcast_ref::<CudaBinaryElementwise>() {
+            } else if let Some(elem) = (***op_ref).downcast_ref::<RocmBinaryElementwise>() {
                 (elem.op.as_str(), elem.dtype)
             } else {
                 panic!(
@@ -581,7 +581,7 @@ pub(crate) fn compile_region(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kernel::fusion::elementwise::CudaBinaryElementwise;
+    use crate::kernel::fusion::elementwise::RocmBinaryElementwise;
     use luminal::op::LLIROp;
     use luminal::prelude::petgraph::algo::toposort;
 
@@ -608,23 +608,23 @@ mod tests {
     fn fusion_start_with_no_predecessor_panics() {
         // Minimal reproducer:
         //
-        //   (no input) ──▶ FusionStart ──▶ CudaBinaryElementwise ──▶ FusionEnd
+        //   (no input) ──▶ FusionStart ──▶ RocmBinaryElementwise ──▶ FusionEnd
         //
-        // CudaBinaryElementwise is a binary op (n_inputs = 2) so a real region would
+        // RocmBinaryElementwise is a binary op (n_inputs = 2) so a real region would
         // have two FS leaves. For this panic-shape test only the *first*
         // FS leaf needs a missing predecessor — `build_compile_units`
         // panics in `expect("FusionStart with no predecessor")` as soon
         // as any FS in `fs_topo` lacks one. We add only one FS edge so
-        // CudaBinaryElementwise has a dangling second input slot, but that's fine:
+        // RocmBinaryElementwise has a dangling second input slot, but that's fine:
         // we're testing the specific panic path inside `build_compile_units`,
         // not full kernel codegen.
         let mut llir: LLIRGraph = LLIRGraph::default();
 
         let fs_node = llir.add_node(llir_of(FusionStart::default()));
-        let fadd_node = llir.add_node(llir_of(CudaBinaryElementwise::default()));
+        let fadd_node = llir.add_node(llir_of(RocmBinaryElementwise::default()));
         let fe_node = llir.add_node(llir_of(FusionEnd::default()));
 
-        // FusionStart → CudaBinaryElementwise → FusionEnd.
+        // FusionStart → RocmBinaryElementwise → FusionEnd.
         llir.add_edge(fs_node, fadd_node, ());
         llir.add_edge(fadd_node, fe_node, ());
 

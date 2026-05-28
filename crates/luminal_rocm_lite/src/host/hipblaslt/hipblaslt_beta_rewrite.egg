@@ -1,15 +1,15 @@
-; Fuse a row-major Add on top of an existing cuBLASLt matmul into
+; Fuse a row-major Add on top of an existing hipBLASLt matmul into
 ; D = alpha * A * B + beta * C.
 ;
 ; The existing matmul rewrites view Luminal's row-major output [m,n] as a
-; column-major cuBLASLt matrix [n,m]. A row-major C input with logical strides
+; column-major hipBLASLt matrix [n,m]. A row-major C input with logical strides
 ; [row_stride, 1] therefore maps to ldc=row_stride. This lets a C slice from a
 ; wider parent tensor use a larger ldc while D keeps the matmul output layout.
-; cuBLASLt requires out-of-place C and D to have the same matrix order, so these
+; hipBLASLt requires out-of-place C and D to have the same matrix order, so these
 ; beta rules only fuse C layouts that map to the current COL-ordered D layout.
 (rule
     (
-        (= ?matmul (Op (cublaslt
+        (= ?matmul (Op (hipblaslt
             ?m ?n ?k
             ?a_layout ?b_layout
             ?a_order ?b_order ?matmul_c_order "COL"
@@ -41,7 +41,7 @@
         (= ?c_dtype (dtype ?c))
     )
     (
-        (let ?fused (Op (cublaslt
+        (let ?fused (Op (hipblaslt
             ?m ?n ?k
             ?a_layout ?b_layout
             ?a_order ?b_order "COL" "COL"
@@ -56,12 +56,12 @@
         (set (dtype ?fused) ?d_dtype)
     )
     :ruleset matmul_backend
-    :name "cublaslt 2d matmul plus c beta"
+    :name "hipblaslt 2d matmul plus c beta"
 )
 
 (rule
     (
-        (= ?matmul (Op (cublaslt
+        (= ?matmul (Op (hipblaslt
             ?m ?n ?k
             ?a_layout ?b_layout
             ?a_order ?b_order ?matmul_c_order "COL"
@@ -93,7 +93,7 @@
         (= ?c_dtype (dtype ?c))
     )
     (
-        (let ?fused (Op (cublaslt
+        (let ?fused (Op (hipblaslt
             ?m ?n ?k
             ?a_layout ?b_layout
             ?a_order ?b_order "COL" "COL"
@@ -108,12 +108,12 @@
         (set (dtype ?fused) ?d_dtype)
     )
     :ruleset matmul_backend
-    :name "cublaslt 2d c plus matmul beta"
+    :name "hipblaslt 2d c plus matmul beta"
 )
 
 (rule
     (
-        (= ?matmul (Op (cublaslt
+        (= ?matmul (Op (hipblaslt
             ?m ?n ?k
             ?a_layout ?b_layout
             ?a_order ?b_order ?matmul_c_order "COL"
@@ -145,7 +145,7 @@
         (= ?c_dtype (dtype ?c))
     )
     (
-        (let ?fused (Op (cublaslt
+        (let ?fused (Op (hipblaslt
             ?m ?n ?k
             ?a_layout ?b_layout
             ?a_order ?b_order "COL" "COL"
@@ -160,12 +160,12 @@
         (set (dtype ?fused) ?d_dtype)
     )
     :ruleset matmul_backend
-    :name "cublaslt batched matmul plus c beta"
+    :name "hipblaslt batched matmul plus c beta"
 )
 
 (rule
     (
-        (= ?matmul (Op (cublaslt
+        (= ?matmul (Op (hipblaslt
             ?m ?n ?k
             ?a_layout ?b_layout
             ?a_order ?b_order ?matmul_c_order "COL"
@@ -197,7 +197,7 @@
         (= ?c_dtype (dtype ?c))
     )
     (
-        (let ?fused (Op (cublaslt
+        (let ?fused (Op (hipblaslt
             ?m ?n ?k
             ?a_layout ?b_layout
             ?a_order ?b_order "COL" "COL"
@@ -212,16 +212,16 @@
         (set (dtype ?fused) ?d_dtype)
     )
     :ruleset matmul_backend
-    :name "cublaslt batched c plus matmul beta"
+    :name "hipblaslt batched c plus matmul beta"
 )
 
-; ROW-ordered D beta fusions. These pair with cublaslt_row_order_rewrite.egg,
-; where the cuBLASLt problem dimensions match Luminal's logical output [m,n].
+; ROW-ordered D beta fusions. These pair with hipblaslt_row_order_rewrite.egg,
+; where the hipBLASLt problem dimensions match Luminal's logical output [m,n].
 ; A row-major C input with logical strides [row_stride, 1] maps directly to a
-; ROW-ordered cuBLASLt C[m,n] descriptor with ldc=row_stride.
+; ROW-ordered hipBLASLt C[m,n] descriptor with ldc=row_stride.
 (rule
     (
-        (= ?matmul (Op (cublaslt
+        (= ?matmul (Op (hipblaslt
             ?m ?n ?k
             ?a_layout ?b_layout
             ?a_order ?b_order ?matmul_c_order "ROW"
@@ -253,7 +253,7 @@
         (= ?c_dtype (dtype ?c))
     )
     (
-        (let ?fused (Op (cublaslt
+        (let ?fused (Op (hipblaslt
             ?m ?n ?k
             ?a_layout ?b_layout
             ?a_order ?b_order "ROW" "ROW"
@@ -268,12 +268,12 @@
         (set (dtype ?fused) ?d_dtype)
     )
     :ruleset matmul_backend
-    :name "cublaslt row-order 2d matmul plus c beta"
+    :name "hipblaslt row-order 2d matmul plus c beta"
 )
 
 (rule
     (
-        (= ?matmul (Op (cublaslt
+        (= ?matmul (Op (hipblaslt
             ?m ?n ?k
             ?a_layout ?b_layout
             ?a_order ?b_order ?matmul_c_order "ROW"
@@ -305,7 +305,7 @@
         (= ?c_dtype (dtype ?c))
     )
     (
-        (let ?fused (Op (cublaslt
+        (let ?fused (Op (hipblaslt
             ?m ?n ?k
             ?a_layout ?b_layout
             ?a_order ?b_order "ROW" "ROW"
@@ -320,12 +320,12 @@
         (set (dtype ?fused) ?d_dtype)
     )
     :ruleset matmul_backend
-    :name "cublaslt row-order 2d c plus matmul beta"
+    :name "hipblaslt row-order 2d c plus matmul beta"
 )
 
 (rule
     (
-        (= ?matmul (Op (cublaslt
+        (= ?matmul (Op (hipblaslt
             ?m ?n ?k
             ?a_layout ?b_layout
             ?a_order ?b_order ?matmul_c_order "ROW"
@@ -357,7 +357,7 @@
         (= ?c_dtype (dtype ?c))
     )
     (
-        (let ?fused (Op (cublaslt
+        (let ?fused (Op (hipblaslt
             ?m ?n ?k
             ?a_layout ?b_layout
             ?a_order ?b_order "ROW" "ROW"
@@ -372,12 +372,12 @@
         (set (dtype ?fused) ?d_dtype)
     )
     :ruleset matmul_backend
-    :name "cublaslt row-order batched matmul plus c beta"
+    :name "hipblaslt row-order batched matmul plus c beta"
 )
 
 (rule
     (
-        (= ?matmul (Op (cublaslt
+        (= ?matmul (Op (hipblaslt
             ?m ?n ?k
             ?a_layout ?b_layout
             ?a_order ?b_order ?matmul_c_order "ROW"
@@ -409,7 +409,7 @@
         (= ?c_dtype (dtype ?c))
     )
     (
-        (let ?fused (Op (cublaslt
+        (let ?fused (Op (hipblaslt
             ?m ?n ?k
             ?a_layout ?b_layout
             ?a_order ?b_order "ROW" "ROW"
@@ -424,5 +424,5 @@
         (set (dtype ?fused) ?d_dtype)
     )
     :ruleset matmul_backend
-    :name "cublaslt row-order batched c plus matmul beta"
+    :name "hipblaslt row-order batched c plus matmul beta"
 )

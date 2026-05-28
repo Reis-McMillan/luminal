@@ -1849,7 +1849,7 @@ extern \"C\" {{
 
 /// Thread-local global dim ordering override. When set, `generate_dyn_dims_defines`
 /// uses this ordering for buffer indices instead of the kernel's local ordering.
-/// This ensures all kernels in a CudaGraphOp use consistent indices into the shared
+/// This ensures all kernels in a RocmGraphOp use consistent indices into the shared
 /// dyn_dims buffer.
 thread_local! {
     static GLOBAL_DYN_DIMS: std::cell::RefCell<Option<Vec<char>>> = const { std::cell::RefCell::new(None) };

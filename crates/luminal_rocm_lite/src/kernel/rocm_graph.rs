@@ -1,5 +1,5 @@
 #![allow(clippy::missing_safety_doc, clippy::not_unsafe_ptr_arg_deref)]
-//! CUDA Graph API wrappers for explicit graph construction and surgical updates.
+//! HIP graph API wrappers for explicit graph construction and surgical updates.
 
 use std::ffi::c_void;
 use std::mem::MaybeUninit;
@@ -13,21 +13,21 @@ use rocmrc::{
     },
 };
 
-/// A CUDA graph that can be modified and instantiated.
-pub struct CudaGraphHandle {
-    pub(crate) cu_graph: hipGraph_t,
+/// A HIP graph that can be modified and instantiated.
+pub struct RocmGraphHandle {
+    pub(crate) graph: hipGraph_t,
     pub(crate) ctx: Arc<HipContext>,
 }
 
-impl CudaGraphHandle {
-    /// Creates a new empty CUDA graph.
+impl RocmGraphHandle {
+    /// Creates a new empty HIP graph.
     pub fn new(ctx: Arc<HipContext>) -> Result<Self, DriverError> {
         ctx.bind_to_thread()?;
         let mut graph = MaybeUninit::uninit();
         unsafe {
             sys::hipGraphCreate(graph.as_mut_ptr(), 0).result()?;
             Ok(Self {
-                cu_graph: graph.assume_init(),
+                graph: graph.assume_init(),
                 ctx,
             })
         }
@@ -58,7 +58,7 @@ impl CudaGraphHandle {
         unsafe {
             sys::hipGraphAddKernelNode(
                 node.as_mut_ptr(),
-                self.cu_graph,
+                self.graph,
                 dependencies.as_ptr(),
                 dependencies.len(),
                 &params,
@@ -78,7 +78,7 @@ impl CudaGraphHandle {
         unsafe {
             sys::hipGraphAddEventRecordNode(
                 node.as_mut_ptr(),
-                self.cu_graph,
+                self.graph,
                 dependencies.as_ptr(),
                 dependencies.len(),
                 event,
@@ -89,41 +89,41 @@ impl CudaGraphHandle {
     }
 
     /// Instantiates the graph, creating an executable graph.
-    pub fn instantiate(&self) -> Result<CudaGraphExecHandle, DriverError> {
+    pub fn instantiate(&self) -> Result<RocmGraphExecHandle, DriverError> {
         self.ctx.bind_to_thread()?;
         let mut graph_exec = MaybeUninit::uninit();
         unsafe {
-            sys::hipGraphInstantiateWithFlags(graph_exec.as_mut_ptr(), self.cu_graph, 0).result()?;
-            Ok(CudaGraphExecHandle {
-                cu_graph_exec: graph_exec.assume_init(),
+            sys::hipGraphInstantiateWithFlags(graph_exec.as_mut_ptr(), self.graph, 0).result()?;
+            Ok(RocmGraphExecHandle {
+                graph_exec: graph_exec.assume_init(),
                 ctx: self.ctx.clone(),
             })
         }
     }
 }
 
-impl Drop for CudaGraphHandle {
+impl Drop for RocmGraphHandle {
     fn drop(&mut self) {
         let _ = self.ctx.bind_to_thread();
-        if !self.cu_graph.is_null() {
+        if !self.graph.is_null() {
             unsafe {
-                let _ = sys::hipGraphDestroy(self.cu_graph);
+                let _ = sys::hipGraphDestroy(self.graph);
             }
         }
     }
 }
 
-/// An instantiated CUDA graph that can be launched and updated.
-pub struct CudaGraphExecHandle {
-    pub(crate) cu_graph_exec: hipGraphExec_t,
+/// An instantiated HIP graph that can be launched and updated.
+pub struct RocmGraphExecHandle {
+    pub(crate) graph_exec: hipGraphExec_t,
     pub(crate) ctx: Arc<HipContext>,
 }
 
-impl CudaGraphExecHandle {
+impl RocmGraphExecHandle {
     /// Launches the graph on the given stream.
     pub fn launch(&self, stream: &HipStream) -> Result<(), DriverError> {
         self.ctx.bind_to_thread()?;
-        unsafe { sys::hipGraphLaunch(self.cu_graph_exec, stream.hip_stream()).result() }
+        unsafe { sys::hipGraphLaunch(self.graph_exec, stream.hip_stream()).result() }
     }
 
     /// Surgically updates a kernel node's parameters without rebuilding the graph.
@@ -145,17 +145,17 @@ impl CudaGraphExecHandle {
             extra: std::ptr::null_mut(),
         };
 
-        unsafe { sys::hipGraphExecKernelNodeSetParams(self.cu_graph_exec, node, &params) }
+        unsafe { sys::hipGraphExecKernelNodeSetParams(self.graph_exec, node, &params) }
             .result()
     }
 }
 
-impl Drop for CudaGraphExecHandle {
+impl Drop for RocmGraphExecHandle {
     fn drop(&mut self) {
         let _ = self.ctx.bind_to_thread();
-        if !self.cu_graph_exec.is_null() {
+        if !self.graph_exec.is_null() {
             unsafe {
-                let _ = sys::hipGraphExecDestroy(self.cu_graph_exec);
+                let _ = sys::hipGraphExecDestroy(self.graph_exec);
             }
         }
     }
@@ -176,7 +176,7 @@ impl HipFunctionExt for HipFunction {
     }
 }
 
-/// Stored kernel parameters that persist for the lifetime of a CUDA graph.
+/// Stored kernel parameters that persist for the lifetime of a HIP graph.
 #[derive(Debug)]
 pub struct KernelParams {
     values: Box<[u64]>,
@@ -221,7 +221,7 @@ impl KernelParams {
         }
     }
 
-    pub fn as_cuda_params(&mut self) -> *mut *mut c_void {
+    pub fn as_rocm_params(&mut self) -> *mut *mut c_void {
         self.ptrs.as_mut_ptr()
     }
 
@@ -241,13 +241,13 @@ impl KernelParams {
     }
 }
 
-/// Stored kernel parameters for megakernels that persist for the lifetime of a CUDA graph.
+/// Stored kernel parameters for megakernels that persist for the lifetime of a HIP graph.
 /// Params: tasks, head, ready, queue_lock, timings, start_times, buffers, dyn_dims
 #[derive(Debug)]
 pub struct MegakernelParams {
     /// Parameter values: [tasks, head, ready, queue_lock, timings, start_times, buffers, dyn_dims]
     values: Box<[u64]>,
-    /// Pointer array for CUDA kernel launch
+    /// Pointer array for HIP kernel launch
     ptrs: Box<[*mut c_void]>,
 }
 
@@ -283,7 +283,7 @@ impl MegakernelParams {
         Self { values, ptrs }
     }
 
-    pub fn as_cuda_params(&mut self) -> *mut *mut c_void {
+    pub fn as_rocm_params(&mut self) -> *mut *mut c_void {
         // Rebuild pointers (in case struct was moved)
         for (i, v) in self.values.iter().enumerate() {
             self.ptrs[i] = v as *const u64 as *mut c_void;
@@ -307,18 +307,18 @@ impl MegakernelParams {
     }
 }
 
-/// Timing data for a single kernel in a CUDA graph.
+/// Timing data for a single kernel in a HIP graph.
 #[derive(Clone, Debug)]
-pub struct CudaGraphKernelTiming {
+pub struct RocmGraphKernelTiming {
     pub kernel_name: &'static str,
     pub start_ns: u64,
     pub end_ns: u64,
 }
 
-/// Timing data for a CUDA graph execution.
+/// Timing data for a HIP graph execution.
 #[derive(Clone, Debug)]
-pub struct CudaGraphTiming {
-    pub kernel_timings: Vec<CudaGraphKernelTiming>,
+pub struct RocmGraphTiming {
+    pub kernel_timings: Vec<RocmGraphKernelTiming>,
     /// Time from launch call until first kernel started on GPU
     pub launch_latency_ns: u64,
     /// Elapsed time (in nanoseconds) from span entry to just before graph launch.
@@ -327,7 +327,7 @@ pub struct CudaGraphTiming {
     pub setup_duration_ns: u64,
 }
 
-pub fn create_cuda_event(ctx: &Arc<HipContext>) -> Result<hipEvent_t, DriverError> {
+pub fn create_rocm_event(ctx: &Arc<HipContext>) -> Result<hipEvent_t, DriverError> {
     ctx.bind_to_thread()?;
     let mut event = MaybeUninit::uninit();
     unsafe {
@@ -338,7 +338,7 @@ pub fn create_cuda_event(ctx: &Arc<HipContext>) -> Result<hipEvent_t, DriverErro
     }
 }
 
-pub fn destroy_cuda_event(ctx: &Arc<HipContext>, event: hipEvent_t) {
+pub fn destroy_rocm_event(ctx: &Arc<HipContext>, event: hipEvent_t) {
     if !event.is_null() {
         let _ = ctx.bind_to_thread();
         unsafe {
@@ -389,13 +389,13 @@ mod tests {
     #[test]
     fn test_create_empty_graph() {
         let Ok(ctx) = HipContext::new(0) else { return };
-        assert!(CudaGraphHandle::new(ctx).is_ok());
+        assert!(RocmGraphHandle::new(ctx).is_ok());
     }
 
     #[test]
     fn test_kernel_params() {
         let mut params = KernelParams::new(0x1000, &[0x2000, 0x3000]);
-        assert!(!params.as_cuda_params().is_null());
+        assert!(!params.as_rocm_params().is_null());
         params.update_output(0x4000);
         params.update_input(0, 0x5000);
     }
@@ -445,7 +445,7 @@ mod tests {
         let mut input: CudaSlice<f32> = unsafe { stream.alloc(1) }.unwrap();
         stream.memcpy_htod(&[5.0f32], &mut input).unwrap();
         let cu_func = unsafe { func.raw_function() };
-        let mut graph = CudaGraphHandle::new(ctx.clone()).unwrap();
+        let mut graph = RocmGraphHandle::new(ctx.clone()).unwrap();
         let mut params =
             KernelParams::new(output.device_ptr(&stream).0, &[input.device_ptr(&stream).0]);
         let _node = unsafe {
@@ -455,7 +455,7 @@ mod tests {
                 (1, 1, 1),
                 (1, 1, 1),
                 0,
-                params.as_cuda_params(),
+                params.as_rocm_params(),
             )
         }
         .unwrap();
@@ -467,7 +467,7 @@ mod tests {
         assert_eq!(result[0], 6.0f32);
     }
 
-    // CUDA Graph Tests
+    // HIP Graph Tests
 
     #[test]
     fn test_cuda_graph_basic_execution() {
@@ -604,7 +604,7 @@ mod tests {
         let eps = dtype_epsilon(luminal::dtype::DType::F32);
         let tol = eps * TOLERANCE_SAFETY_FACTOR;
         assert_close(&rt.get_f32(c), &expected, tol, tol);
-        assert!(rt.last_kernel_stats.iter().any(|s| s.name == "CudaGraph"));
+        assert!(rt.last_kernel_stats.iter().any(|s| s.name == "RocmGraph"));
     }
 
     #[test]
@@ -641,7 +641,7 @@ mod tests {
         assert_close(&rt.get_f32(output), &expected, 1e-2, 1e-2);
     }
 
-    /// Test that CUDA graphs produce correct results when dynamic dimensions
+    /// Test that HIP graphs produce correct results when dynamic dimensions
     /// change incrementally across many executions (simulating a decode loop
     /// where position offset increments each step).
     #[test]

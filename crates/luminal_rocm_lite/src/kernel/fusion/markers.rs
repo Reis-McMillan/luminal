@@ -165,7 +165,7 @@ impl EgglogOp for FusionEnd {
                     (= ?fe (Op (FusionEnd ?shape ?s ?dt) (ICons ?inner (INil))))
                     (= ?u (Op ({hlir} ?shape ?s ?s) (ICons ?fe (INil))))
                  ) (
-                    (let ?elem (Op (CudaUnaryElementwise \"{opcode}\" ?shape ?s ?s ?dt)
+                    (let ?elem (Op (RocmUnaryElementwise \"{opcode}\" ?shape ?s ?s ?dt)
                                    (ICons ?inner (INil))))
                     (let ?new_fe (Op (FusionEnd ?shape ?s ?dt) (ICons ?elem (INil))))
                     (union ?u ?new_fe)
@@ -183,7 +183,7 @@ impl EgglogOp for FusionEnd {
                                  (ICons ?fe (ICons ?b (INil)))))
                  ) (
                     (let ?fs_b (Op (FusionStart ?shape ?b_s ?dt) (ICons ?b (INil))))
-                    (let ?elem (Op (CudaBinaryElementwise \"{opcode}\" ?shape ?a_s ?b_s ?out_s ?dt)
+                    (let ?elem (Op (RocmBinaryElementwise \"{opcode}\" ?shape ?a_s ?b_s ?out_s ?dt)
                                    (ICons ?inner_a (ICons ?fs_b (INil)))))
                     (let ?new_fe (Op (FusionEnd ?shape ?out_s ?dt) (ICons ?elem (INil))))
                     (union ?bin ?new_fe)
@@ -197,7 +197,7 @@ impl EgglogOp for FusionEnd {
                                  (ICons ?a (ICons ?fe (INil)))))
                  ) (
                     (let ?fs_a (Op (FusionStart ?shape ?a_s ?dt) (ICons ?a (INil))))
-                    (let ?elem (Op (CudaBinaryElementwise \"{opcode}\" ?shape ?a_s ?b_s ?out_s ?dt)
+                    (let ?elem (Op (RocmBinaryElementwise \"{opcode}\" ?shape ?a_s ?b_s ?out_s ?dt)
                                    (ICons ?fs_a (ICons ?inner_b (INil)))))
                     (let ?new_fe (Op (FusionEnd ?shape ?out_s ?dt) (ICons ?elem (INil))))
                     (union ?bin ?new_fe)
@@ -216,7 +216,7 @@ impl EgglogOp for FusionEnd {
                     (= ?fs_u (Op (FusionStart ?shape ?s ?dt) (ICons ?u (INil))))
                  ) (
                     (let ?fs_x (Op (FusionStart ?shape ?s ?dt) (ICons ?x (INil))))
-                    (let ?elem (Op (CudaUnaryElementwise \"{opcode}\" ?shape ?s ?s ?dt)
+                    (let ?elem (Op (RocmUnaryElementwise \"{opcode}\" ?shape ?s ?s ?dt)
                                    (ICons ?fs_x (INil))))
                     (union ?fs_u ?elem)
                  ) :ruleset fusion_grow :name \"grow-U-FS-{hlir}\")"
@@ -225,10 +225,10 @@ impl EgglogOp for FusionEnd {
                 "(rule (
                     (= ?inner_fe (Op (FusionEnd ?shape ?s ?dt) (ICons ?inner (INil))))
                     (= ?bad_fs (Op (FusionStart ?shape ?s ?dt) (ICons ?inner_fe (INil))))
-                    (= ?bad_elem (Op (CudaUnaryElementwise \"{opcode}\" ?shape ?s ?s ?dt)
+                    (= ?bad_elem (Op (RocmUnaryElementwise \"{opcode}\" ?shape ?s ?s ?dt)
                                      (ICons ?bad_fs (INil))))
                     (= ?bad_fe (Op (FusionEnd ?shape ?s ?dt) (ICons ?bad_elem (INil))))
-                    (= ?good_elem (Op (CudaUnaryElementwise \"{opcode}\" ?shape ?s ?s ?dt)
+                    (= ?good_elem (Op (RocmUnaryElementwise \"{opcode}\" ?shape ?s ?s ?dt)
                                       (ICons ?inner (INil))))
                     (= ?good_fe (Op (FusionEnd ?shape ?s ?dt) (ICons ?good_elem (INil))))
                     (= ?bad_fe ?good_fe)
@@ -246,7 +246,7 @@ impl EgglogOp for FusionEnd {
                  ) (
                     (let ?fs_a (Op (FusionStart ?shape ?a_s ?dt) (ICons ?a (INil))))
                     (let ?fs_b (Op (FusionStart ?shape ?b_s ?dt) (ICons ?b (INil))))
-                    (let ?elem (Op (CudaBinaryElementwise \"{opcode}\" ?shape ?a_s ?b_s ?out_s ?dt)
+                    (let ?elem (Op (RocmBinaryElementwise \"{opcode}\" ?shape ?a_s ?b_s ?out_s ?dt)
                                    (ICons ?fs_a (ICons ?fs_b (INil)))))
                     (union ?fs_bin ?elem)
                  ) :ruleset fusion_grow :name \"grow-B-FS-{hlir}\")"
@@ -256,10 +256,10 @@ impl EgglogOp for FusionEnd {
                     (= ?inner_fe (Op (FusionEnd ?shape ?a_s ?dt) (ICons ?inner_a (INil))))
                     (= ?bad_fs (Op (FusionStart ?shape ?a_s ?dt) (ICons ?inner_fe (INil))))
                     (= ?fs_b (Op (FusionStart ?shape ?b_s ?dt) (ICons ?b (INil))))
-                    (= ?bad_elem (Op (CudaBinaryElementwise \"{opcode}\" ?shape ?a_s ?b_s ?out_s ?dt)
+                    (= ?bad_elem (Op (RocmBinaryElementwise \"{opcode}\" ?shape ?a_s ?b_s ?out_s ?dt)
                                      (ICons ?bad_fs (ICons ?fs_b (INil)))))
                     (= ?bad_fe (Op (FusionEnd ?shape ?out_s ?dt) (ICons ?bad_elem (INil))))
-                    (= ?good_elem (Op (CudaBinaryElementwise \"{opcode}\" ?shape ?a_s ?b_s ?out_s ?dt)
+                    (= ?good_elem (Op (RocmBinaryElementwise \"{opcode}\" ?shape ?a_s ?b_s ?out_s ?dt)
                                       (ICons ?inner_a (ICons ?fs_b (INil)))))
                     (= ?good_fe (Op (FusionEnd ?shape ?out_s ?dt) (ICons ?good_elem (INil))))
                     (= ?bad_fe ?good_fe)
@@ -272,10 +272,10 @@ impl EgglogOp for FusionEnd {
                     (= ?inner_fe (Op (FusionEnd ?shape ?b_s ?dt) (ICons ?inner_b (INil))))
                     (= ?bad_fs (Op (FusionStart ?shape ?b_s ?dt) (ICons ?inner_fe (INil))))
                     (= ?fs_a (Op (FusionStart ?shape ?a_s ?dt) (ICons ?a (INil))))
-                    (= ?bad_elem (Op (CudaBinaryElementwise \"{opcode}\" ?shape ?a_s ?b_s ?out_s ?dt)
+                    (= ?bad_elem (Op (RocmBinaryElementwise \"{opcode}\" ?shape ?a_s ?b_s ?out_s ?dt)
                                      (ICons ?fs_a (ICons ?bad_fs (INil)))))
                     (= ?bad_fe (Op (FusionEnd ?shape ?out_s ?dt) (ICons ?bad_elem (INil))))
-                    (= ?good_elem (Op (CudaBinaryElementwise \"{opcode}\" ?shape ?a_s ?b_s ?out_s ?dt)
+                    (= ?good_elem (Op (RocmBinaryElementwise \"{opcode}\" ?shape ?a_s ?b_s ?out_s ?dt)
                                       (ICons ?fs_a (ICons ?inner_b (INil)))))
                     (= ?good_fe (Op (FusionEnd ?shape ?out_s ?dt) (ICons ?good_elem (INil))))
                     (= ?bad_fe ?good_fe)
@@ -294,7 +294,7 @@ impl EgglogOp for FusionEnd {
                     (= ?bin (Op ({hlir} ?shape ?a_s ?b_s ?out_s)
                                  (ICons ?fe_a (ICons ?fe_b (INil)))))
                  ) (
-                    (let ?elem (Op (CudaBinaryElementwise \"{opcode}\" ?shape ?a_s ?b_s ?out_s ?dt)
+                    (let ?elem (Op (RocmBinaryElementwise \"{opcode}\" ?shape ?a_s ?b_s ?out_s ?dt)
                                    (ICons ?inner_a (ICons ?inner_b (INil)))))
                     (let ?new_fe (Op (FusionEnd ?shape ?out_s ?dt) (ICons ?elem (INil))))
                     (union ?bin ?new_fe)

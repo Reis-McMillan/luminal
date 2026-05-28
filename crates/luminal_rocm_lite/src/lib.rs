@@ -50,7 +50,7 @@ fn rocm_dtype(dtype: DType) -> &'static str {
     }
 }
 
-const ROCM_HIPRTC_INCLUDE_PATHS: [&str; 2] = ["/usr/local/cuda/include", "/usr/include"];
+const ROCM_HIPRTC_INCLUDE_PATHS: [&str; 2] = ["/opt/rocm/include", "/usr/include"];
 
 #[derive(Debug)]
 pub(crate) enum RocmModuleImageCompileFailure {
@@ -67,8 +67,8 @@ pub(crate) struct RocmModuleImageCompileError {
     pub target_arch: Option<String>,
     pub driver_version: Option<i32>,
     pub runtime_version: Option<i32>,
-    pub nvrtc_options: Vec<String>,
-    pub nvrtc_log: Option<String>,
+    pub hiprtc_options: Vec<String>,
+    pub hiprtc_log: Option<String>,
     pub failure: RocmModuleImageCompileFailure,
 }
 
@@ -95,10 +95,10 @@ impl std::fmt::Display for RocmModuleImageCompileError {
         if let Some(version) = self.runtime_version {
             write!(f, " | runtime {}", format_rocm_version(version))?;
         }
-        if !self.nvrtc_options.is_empty() {
-            write!(f, " | options {:?}", self.nvrtc_options)?;
+        if !self.hiprtc_options.is_empty() {
+            write!(f, " | options {:?}", self.hiprtc_options)?;
         }
-        if let Some(log) = &self.nvrtc_log {
+        if let Some(log) = &self.hiprtc_log {
             write!(f, " | log: {log}")?;
         }
         Ok(())
@@ -137,8 +137,9 @@ fn rocm_driver_diagnostics() -> (Option<i32>, Option<i32>) {
         .ok()
         .map(|_| driver_version);
 
-    // Avoid touching cudarc's runtime loader here. On some environments it eagerly
-    // resolves newer libcudart symbols that may not exist in the installed runtime.
+    // Avoid touching the HIP runtime loader here. On some environments it
+    // eagerly resolves newer libamdhip64 symbols that may not exist in the
+    // installed runtime.
     (driver_version, None)
 }
 
@@ -174,16 +175,16 @@ fn build_module_image_compile_error(
     target_arch: Option<String>,
     driver_version: Option<i32>,
     runtime_version: Option<i32>,
-    nvrtc_options: &[String],
-    nvrtc_log: Option<String>,
+    hiprtc_options: &[String],
+    hiprtc_log: Option<String>,
     failure: RocmModuleImageCompileFailure,
 ) -> RocmModuleImageCompileError {
     RocmModuleImageCompileError {
         target_arch,
         driver_version,
         runtime_version,
-        nvrtc_options: nvrtc_options.to_vec(),
-        nvrtc_log,
+        hiprtc_options: hiprtc_options.to_vec(),
+        hiprtc_log,
         failure,
     }
 }
@@ -239,14 +240,14 @@ pub(crate) fn compile_module_image_for_current_device<S: AsRef<str>>(
 
     let opt_refs: Vec<&str> = hiprtc_options.iter().map(String::as_str).collect();
     if let Err(error) = hiprtc_result::compile_program(program, &opt_refs) {
-        let nvrtc_log = read_hiprtc_log(program);
+        let hiprtc_log = read_hiprtc_log(program);
         let _ = hiprtc_result::destroy_program(program);
         return Err(build_module_image_compile_error(
             Some(target_arch),
             driver_version,
             runtime_version,
             &hiprtc_options,
-            nvrtc_log,
+            hiprtc_log,
             RocmModuleImageCompileFailure::Hiprtc { stage: "compile_program", error },
         ));
     }
@@ -298,24 +299,30 @@ pub(crate) fn compile_module_image_for_current_device<S: AsRef<str>>(
     Ok(Hsaco::from_bytes(rocbin))
 }
 
-/// Returns the bandwidth of the device in GB/s
+/// Returns the bandwidth of the device in GB/s. Unknown devices return `None`
+/// so callers can skip bandwidth-dependent decisions instead of guessing.
+///
+/// Populate with measured numbers per AMD card as they're brought up. Match on
+/// substrings of the marketing name from `hipDeviceGetName` (e.g. "7900 XTX",
+/// "MI300X").
 pub fn rocm_bandwidth_gbps(ctx: &Arc<HipContext>) -> Option<usize> {
-    Some(match ctx.name().unwrap().as_str() {
-        /// to-do fix for ROCM devices
-        "NVIDIA Thor" => 273,
-        "NVIDIA H100 PCIe" => 2_000,
-        "NVIDIA H100 SXM" => 3_350,
+    let name = ctx.name().ok()?;
+    Some(match name.as_str() {
+        // TODO: populate measured values; placeholder for RDNA3 7900 XTX
+        // (960 GB/s GDDR6 per AMD spec sheet).
+        n if n.contains("7900 XTX") => 960,
         _ => return None,
     })
 }
 
-/// Returns the bandwidth of the device in TFLOPs
+/// Returns the f32 compute throughput of the device in TFLOPs. Same unknown-
+/// device semantics as [`rocm_bandwidth_gbps`].
 pub fn rocm_compute_f32_tflops(ctx: &Arc<HipContext>) -> Option<usize> {
-    Some(match ctx.name().unwrap().as_str() {
-        /// to-do fix for ROCM devices
-        "NVIDIA Thor" => 125, // forced to use tf32 flops
-        "NVIDIA H100 PCIe" => 756,
-        "NVIDIA H100 SXM" => 989,
+    let name = ctx.name().ok()?;
+    Some(match name.as_str() {
+        // TODO: populate measured values; placeholder for RDNA3 7900 XTX
+        // (~61 TFLOPs FP32 per AMD spec sheet).
+        n if n.contains("7900 XTX") => 61,
         _ => return None,
     })
 }

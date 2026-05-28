@@ -1,16 +1,16 @@
-; Mixed output dtype rewrites for cuBLASLt.
+; Mixed output dtype rewrites for hipBLASLt.
 ;
 ; The first mixed mode we need for low-precision matmuls is:
 ;
 ;   D[f32] = A[fp16/bf16] * B[fp16/bf16]
 ;
 ; Luminal graphs express this today as a Cast(F32) around a low-precision
-; matmul. cuBLASLt can write the f32 output directly, so expose that candidate
+; matmul. hipBLASLt can write the f32 output directly, so expose that candidate
 ; before beta fusion tries to consume an f32 C input.
 
 (rule
     (
-        (= ?matmul (Op (cublaslt
+        (= ?matmul (Op (hipblaslt
             ?m ?n ?k
             ?a_layout ?b_layout
             ?a_order ?b_order ?c_order ?d_order
@@ -24,7 +24,7 @@
         (= ?cast (Op (Cast ?size (F32)) (ICons ?matmul (INil))))
     )
     (
-        (let ?fused (Op (cublaslt
+        (let ?fused (Op (hipblaslt
             ?m ?n ?k
             ?a_layout ?b_layout ?a_order ?b_order ?c_order ?d_order
             ?lda ?ldb ?ldc ?ldd
@@ -38,12 +38,12 @@
         (set (dtype ?fused) (F32))
     )
     :ruleset matmul_backend
-    :name "cublaslt f16 matmul cast f32 output"
+    :name "hipblaslt f16 matmul cast f32 output"
 )
 
 (rule
     (
-        (= ?matmul (Op (cublaslt
+        (= ?matmul (Op (hipblaslt
             ?m ?n ?k
             ?a_layout ?b_layout
             ?a_order ?b_order ?c_order ?d_order
@@ -57,7 +57,7 @@
         (= ?cast (Op (Cast ?size (F32)) (ICons ?matmul (INil))))
     )
     (
-        (let ?fused (Op (cublaslt
+        (let ?fused (Op (hipblaslt
             ?m ?n ?k
             ?a_layout ?b_layout ?a_order ?b_order ?c_order ?d_order
             ?lda ?ldb ?ldc ?ldd
@@ -71,5 +71,5 @@
         (set (dtype ?fused) (F32))
     )
     :ruleset matmul_backend
-    :name "cublaslt bf16 matmul cast f32 output"
+    :name "hipblaslt bf16 matmul cast f32 output"
 )

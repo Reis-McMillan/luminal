@@ -1,11 +1,11 @@
 //! Direct 2D matmul kernel — bypasses egglog rewrites, used as a custom op
-//! for matmul shapes where the cublaslt egg rules don't reliably fire.
+//! for matmul shapes where the hipblaslt egg rules don't reliably fire.
 //!
-//! The cublaslt 2D rules in `host/cublaslt/cublaslt_*Cm_rewrite.egg` /
-//! `cublaslt_Rm*_rewrite.egg` are *supposed* to match any 2D matmul whose
+//! The hipblaslt 2D rules in `host/hipblaslt/cublaslt_*Cm_rewrite.egg` /
+//! `hipblaslt_Rm*_rewrite.egg` are *supposed* to match any 2D matmul whose
 //! Mul + SumReduce broadcast lowering has the expected stride patterns,
 //! and the conditional matmul cleanup is *supposed* to delete the
-//! elementwise Mul + KernelSumReduce fallback whenever a cublaslt alternative
+//! elementwise Mul + KernelSumReduce fallback whenever a hipblaslt alternative
 //! exists. In practice both fail to fire reliably for the VAE's mid-block
 //! `AttnBlock` matmuls — at 1024² that lets the search occasionally pick
 //! the broadcast-Mul path for `q @ kᵀ`, generating a `(HW, HW, C) =
@@ -17,7 +17,7 @@
 //! aren't trying to fuse with surrounding ops, just guarantee a sane
 //! lowering for the matmuls we know are problematic.
 //!
-//! The CUDA implementation is a textbook 2D-blocked SGEMM:
+//! The HIP implementation is a textbook 2D-blocked SGEMM:
 //!   * 16×16 output tile per block (256 threads)
 //!   * Tiled load of A and B into shared memory in K-size chunks
 //!   * Each thread accumulates one output element across all K-tiles
@@ -43,7 +43,7 @@ use crate::kernel::KernelOp;
 /// load, which avoids materializing the cast as a separate intermediate
 /// tensor (important for the text encoder / transformer where the F32-
 /// cast weights would not fit in GPU memory). All shape parameters are
-/// static (baked into the CUDA source via #defines).
+/// static (baked into the HIP source via #defines).
 ///
 /// When `batch > 1` the kernel does `batch` independent 2D matmuls in
 /// parallel: A is `(batch, M, K)`, B is `(batch, *, *)` with the same
@@ -301,8 +301,8 @@ pub fn linear_bias(a: GraphTensor, b: GraphTensor, bias: GraphTensor) -> GraphTe
 /// Lowers as plain HLIR — `Cast(A, BF16) @ permute(B_bf16) → Cast(F32)`.
 /// The activation cast and output cast are tiny (M*K and M*N elements;
 /// the K=hidden weight stays BF16). The inner BF16 matmul matches the
-/// existing cublaslt rewrite rules and runs as
-/// `CUBLAS_COMPUTE_32F_FAST_16BF` — Hopper's native 2× BF16 path.
+/// existing hipblaslt rewrite rules and runs as
+/// `HIPBLAS_COMPUTE_32F_FAST_16BF` — Tensor Core BF16 path.
 pub fn linear_no_bias_bf16_w(a: GraphTensor, b_bf16: GraphTensor) -> GraphTensor {
     assert_eq!(a.dtype, DType::F32, "linear_no_bias_bf16_w expects F32 A");
     assert_eq!(

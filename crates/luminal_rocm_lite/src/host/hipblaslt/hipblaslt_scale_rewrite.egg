@@ -1,9 +1,9 @@
-; Scalar alpha/beta rewrites for cuBLASLt. These rules target scalar constants
+; Scalar alpha/beta rewrites for hipBLASLt. These rules target scalar constants
 ; expanded across the matmul/add shape, i.e. zero strides on every logical axis.
 
 (rule
     (
-        (= ?matmul (Op (cublaslt
+        (= ?matmul (Op (hipblaslt
             ?m ?n ?k
             ?a_layout ?b_layout
             ?a_order ?b_order ?c_order ?d_order
@@ -26,7 +26,7 @@
         (= ?matmul_strides ?scaled_out_strides)
     )
     (
-        (let ?fused (Op (cublaslt
+        (let ?fused (Op (hipblaslt
             ?m ?n ?k
             ?a_layout ?b_layout
             ?a_order ?b_order ?c_order ?d_order
@@ -41,12 +41,12 @@
         (set (dtype ?fused) ?d_dtype)
     )
     :ruleset matmul_backend
-    :name "cublaslt 2d alpha scale"
+    :name "hipblaslt 2d alpha scale"
 )
 
 (rule
     (
-        (= ?matmul (Op (cublaslt
+        (= ?matmul (Op (hipblaslt
             ?m ?n ?k
             ?a_layout ?b_layout
             ?a_order ?b_order ?c_order ?d_order
@@ -69,7 +69,7 @@
         (= ?matmul_strides ?scaled_out_strides)
     )
     (
-        (let ?fused (Op (cublaslt
+        (let ?fused (Op (hipblaslt
             ?m ?n ?k
             ?a_layout ?b_layout
             ?a_order ?b_order ?c_order ?d_order
@@ -84,12 +84,12 @@
         (set (dtype ?fused) ?d_dtype)
     )
     :ruleset matmul_backend
-    :name "cublaslt batched alpha scale"
+    :name "hipblaslt batched alpha scale"
 )
 
 (rule
     (
-        (= ?matmul (Op (cublaslt
+        (= ?matmul (Op (hipblaslt
             ?m ?n ?k
             ?a_layout ?b_layout
             ?a_order ?b_order ?matmul_c_order "ROW"
@@ -126,7 +126,7 @@
         (= ?c_dtype (dtype ?c))
     )
     (
-        (let ?fused (Op (cublaslt
+        (let ?fused (Op (hipblaslt
             ?m ?n ?k
             ?a_layout ?b_layout
             ?a_order ?b_order "ROW" "ROW"
@@ -141,12 +141,12 @@
         (set (dtype ?fused) ?d_dtype)
     )
     :ruleset matmul_backend
-    :name "cublaslt row-order 2d scaled c beta"
+    :name "hipblaslt row-order 2d scaled c beta"
 )
 
 (rule
     (
-        (= ?matmul (Op (cublaslt
+        (= ?matmul (Op (hipblaslt
             ?m ?n ?k
             ?a_layout ?b_layout
             ?a_order ?b_order ?matmul_c_order "ROW"
@@ -183,7 +183,7 @@
         (= ?c_dtype (dtype ?c))
     )
     (
-        (let ?fused (Op (cublaslt
+        (let ?fused (Op (hipblaslt
             ?m ?n ?k
             ?a_layout ?b_layout
             ?a_order ?b_order "ROW" "ROW"
@@ -198,12 +198,12 @@
         (set (dtype ?fused) ?d_dtype)
     )
     :ruleset matmul_backend
-    :name "cublaslt row-order 2d scaled c plus matmul beta"
+    :name "hipblaslt row-order 2d scaled c plus matmul beta"
 )
 
 (rule
     (
-        (= ?matmul (Op (cublaslt
+        (= ?matmul (Op (hipblaslt
             ?m ?n ?k
             ?a_layout ?b_layout
             ?a_order ?b_order ?matmul_c_order "ROW"
@@ -240,7 +240,7 @@
         (= ?c_dtype (dtype ?c))
     )
     (
-        (let ?fused (Op (cublaslt
+        (let ?fused (Op (hipblaslt
             ?m ?n ?k
             ?a_layout ?b_layout
             ?a_order ?b_order "ROW" "ROW"
@@ -255,12 +255,12 @@
         (set (dtype ?fused) ?d_dtype)
     )
     :ruleset matmul_backend
-    :name "cublaslt row-order batched scaled c beta"
+    :name "hipblaslt row-order batched scaled c beta"
 )
 
 (rule
     (
-        (= ?matmul (Op (cublaslt
+        (= ?matmul (Op (hipblaslt
             ?m ?n ?k
             ?a_layout ?b_layout
             ?a_order ?b_order ?matmul_c_order "ROW"
@@ -297,7 +297,7 @@
         (= ?c_dtype (dtype ?c))
     )
     (
-        (let ?fused (Op (cublaslt
+        (let ?fused (Op (hipblaslt
             ?m ?n ?k
             ?a_layout ?b_layout
             ?a_order ?b_order "ROW" "ROW"
@@ -312,5 +312,5 @@
         (set (dtype ?fused) ?d_dtype)
     )
     :ruleset matmul_backend
-    :name "cublaslt row-order batched scaled c plus matmul beta"
+    :name "hipblaslt row-order batched scaled c plus matmul beta"
 )

@@ -1,14 +1,14 @@
-; Column-major × Column-major matmul: C[m,n] = A[m,k] × B[k,n]
-; A[m,k] column-major → expand to [m, n, k] with strides [1, 0, m]
+; Row-major × Column-major matmul: C[m,n] = A[m,k] × B[k,n]
+; A[m,k] row-major → expand to [m, n, k] with strides [k, 0, 1]
 ; B[k,n] column-major → expand to [m, n, k] with strides [0, k, 1]
 ;
 ; Row-major viewed as column-major (swap trick):
-;   Column-major A[m,k] is already column-major with lda=m
+;   Row-major A[m,k] ≡ column-major A^T[k,m] with lda=k
 ;   Column-major B[k,n] is already column-major with ldb=k
 ;   Row-major C[m,n] ≡ column-major C^T[n,m] with ldc=n
 ;
 ; C^T[n,m] = (A × B)^T = B^T[n,k] × A^T[k,m]
-; cuBLAS: cublasSgemm(OP_T, OP_T, n, m, k, α, B, k, A, m, β, C, n)
+; rocBLAS: rocblasSgemm(OP_T, OP_N, n, m, k, α, B, k, A, k, β, C, n)
 (rule
     (
         ; Match Mul node
@@ -17,7 +17,7 @@
         ; Match Sum that reduces the Mul (k dimension)
         (= ?sum (Op (Sum ?out_shape ?k ?sum_in_stride ?k_stride ?sum_out_stride) (ICons ?mul (INil))))
 
-        ; Must be exactly 2D (no batch dims) — batched matmul uses CuBlasLt
+        ; Must be exactly 2D (no batch dims) — batched matmul uses HipBlasLt
         (= (len ?out_shape) 2)
 
         ; Get dimensions from output shape
@@ -39,10 +39,10 @@
         ; Assert contiguous k stride on output (required for reduction)
         (= ?k_stride (MIter))
 
-        ; Assert A has strides [1, 0, m] (column-major A[m,k] broadcast to [m,n,k])
-        (= ?a_m_stride (MIter))
+        ; Assert A has strides [k, 0, 1] (row-major A[m,k] broadcast to [m,n,k])
+        (= ?a_m_stride (MMul (MIter) ?k))
         (= ?a_n_stride (MNum 0))
-        (= ?a_k_stride (MMul (MIter) ?m))
+        (= ?a_k_stride (MIter))
 
         ; Assert B has strides [0, k, 1] (column-major B[k,n] broadcast to [m,n,k])
         (= ?b_m_stride (MNum 0))
@@ -53,21 +53,21 @@
         (= (F32) (dtype ?b))
     )
     (
-        ; For column-major A × column-major B with cuBLAS:
-        ; C^T = B^T × A^T → cublasSgemm(OP_T, OP_T, n, m, k, α, B, k, A, m, β, C, n)
-        (let ?sgemm (Op (cublasSgemmV2
-            ?n             ; cuBLAS m = our n (swapped)
-            ?m             ; cuBLAS n = our m (swapped)
+        ; For row-major A × column-major B with rocBLAS:
+        ; C^T = B^T × A^T → rocblasSgemm(OP_T, OP_N, n, m, k, α, B, k, A, k, β, C, n)
+        (let ?sgemm (Op (rocblasSgemm
+            ?n             ; rocBLAS m = our n (swapped)
+            ?m             ; rocBLAS n = our m (swapped)
             ?k             ; k unchanged
-            "T"            ; transa = Transpose (B is column-major [k,n], need B^T[n,k])
-            "T"            ; transb = Transpose (A is column-major [m,k], need A^T[k,m])
+            "T"            ; transa = Transpose (B is column-major, need B^T)
+            "N"            ; transb = No transpose
             ?k             ; lda = k (column-major B[k,n])
-            ?m             ; ldb = m (column-major A[m,k])
+            ?k             ; ldb = k (row-major A[m,k] viewed as col-major [k,m])
             ?n)            ; ldc = n (row-major C[m,n] viewed as col-major [n,m])
             (ICons ?b (ICons ?a (INil)))))
         (union ?sum ?sgemm)
         (set (dtype ?sgemm) (F32))
     )
     :ruleset matmul_backend
-    :name "cublas sgemm column-major × column-major"
+    :name "rocblas sgemm row-major × column-major"
 )

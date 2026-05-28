@@ -24,7 +24,7 @@ use crate::{
     host::{DeviceBuffer, HostOp},
 };
 
-/// Global shared cuBLAS handle to avoid per-operation workspace allocation
+/// Global shared rocBLAS handle to avoid per-operation workspace allocation
 static SHARED_ROCBLAS: OnceLock<Arc<RocblasHandle>> = OnceLock::new();
 
 /// Parse rocBLAS operation from egglog string (e.g., "\"T\"" -> rocblas_operation_transpose)
@@ -50,7 +50,7 @@ pub struct RocBlasSgemm {
     lda: Expression,
     ldb: Expression,
     ldc: Expression,
-    /// Lazily initialized cuBLAS handle - created on first execute
+    /// Lazily initialized rocBLAS handle - created on first execute
     rocblas: OnceLock<Arc<RocblasHandle>>,
 }
 
@@ -75,7 +75,7 @@ impl EgglogOp for RocBlasSgemm {
     fn sort(&self) -> SortDef {
         sort(
             OP_KIND,
-            "rocblas_sgemm",
+            "rocblasSgemm",
             &[
                 ("m", EXPRESSION),
                 ("n", EXPRESSION),
@@ -95,10 +95,10 @@ impl EgglogOp for RocBlasSgemm {
 
     fn rewrites(&self) -> Vec<Rule> {
         vec![
-            Rule::raw(include_str!["sgemm_v2_RmRm_rewrite.egg"]), // row row
-            Rule::raw(include_str!["sgemm_v2_RmCm_rewrite.egg"]), // row col
-            Rule::raw(include_str!["sgemm_v2_CmRm_rewrite.egg"]), // col row
-            Rule::raw(include_str!["sgemm_v2_CmCm_rewrite.egg"]), // col col
+            Rule::raw(include_str!["sgemm_RmRm_rewrite.egg"]), // row row
+            Rule::raw(include_str!["sgemm_RmCm_rewrite.egg"]), // row col
+            Rule::raw(include_str!["sgemm_CmRm_rewrite.egg"]), // col row
+            Rule::raw(include_str!["sgemm_CmCm_rewrite.egg"]), // col col
         ]
     }
 
@@ -194,7 +194,7 @@ impl HostOp for RocBlasSgemm {
         );
         let _sgemm_span = span!(
             Level::TRACE,
-            "cuBLAS_SGEMM_V2",
+            "rocBLAS_SGEMM",
             m,
             n,
             k,
@@ -240,7 +240,7 @@ impl HostOp for RocBlasSgemm {
 
         if status != rocblas_status::rocblas_status_success {
             return Err(anyhow::anyhow!(
-                "cuBLAS SGEMM TN failed with status: {:?}",
+                "rocBLAS SGEMM TN failed with status: {:?}",
                 status
             ));
         }
@@ -253,7 +253,7 @@ impl HostOp for RocBlasSgemm {
     }
 
     fn output_bytes(&self) -> Expression {
-        // CuBlasSgemmV2 is F32 only (Sgemm = Single precision)
+        // RocBlasSgemm is F32 only (Sgemm = Single precision)
         self.output_size() * 4
     }
 }

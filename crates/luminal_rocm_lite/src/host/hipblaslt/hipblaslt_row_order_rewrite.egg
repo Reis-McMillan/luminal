@@ -1,5 +1,5 @@
-; Natural cuBLASLt row-order output rewrites. These keep Luminal's logical
-; output C[m,n] as a cuBLASLt ROW-ordered D[m,n] instead of using the older
+; Natural hipBLASLt row-order output rewrites. These keep Luminal's logical
+; output C[m,n] as a hipBLASLt ROW-ordered D[m,n] instead of using the older
 ; swapped COL-ordered D[n,m] view. A and B orders mirror their matched logical
 ; layouts, so this family is the legal base for future ROW-ordered beta fusions.
 
@@ -27,10 +27,10 @@
 
         (= ?dt (dtype ?a))
         (= ?dt (dtype ?b))
-        (cublaslt_base_dtype ?dt)
+        (hipblaslt_base_dtype ?dt)
     )
     (
-        (let ?sgemm (Op (cublaslt
+        (let ?sgemm (Op (hipblaslt
             ?m ?n ?k
             "N" "N"
             "ROW" "ROW" "ROW" "ROW"
@@ -49,7 +49,7 @@
         (set (dtype ?sgemm) ?dt)
     )
     :ruleset matmul_backend
-    :name "cublaslt row-order row-major x row-major"
+    :name "hipblaslt row-order row-major x row-major"
 )
 
 (rule
@@ -76,10 +76,10 @@
 
         (= ?dt (dtype ?a))
         (= ?dt (dtype ?b))
-        (cublaslt_base_dtype ?dt)
+        (hipblaslt_base_dtype ?dt)
     )
     (
-        (let ?sgemm (Op (cublaslt
+        (let ?sgemm (Op (hipblaslt
             ?m ?n ?k
             "N" "N"
             "ROW" "COL" "ROW" "ROW"
@@ -98,7 +98,7 @@
         (set (dtype ?sgemm) ?dt)
     )
     :ruleset matmul_backend
-    :name "cublaslt row-order row-major x column-major"
+    :name "hipblaslt row-order row-major x column-major"
 )
 
 (rule
@@ -125,10 +125,10 @@
 
         (= ?dt (dtype ?a))
         (= ?dt (dtype ?b))
-        (cublaslt_base_dtype ?dt)
+        (hipblaslt_base_dtype ?dt)
     )
     (
-        (let ?sgemm (Op (cublaslt
+        (let ?sgemm (Op (hipblaslt
             ?m ?n ?k
             "N" "N"
             "COL" "ROW" "ROW" "ROW"
@@ -147,7 +147,7 @@
         (set (dtype ?sgemm) ?dt)
     )
     :ruleset matmul_backend
-    :name "cublaslt row-order column-major x row-major"
+    :name "hipblaslt row-order column-major x row-major"
 )
 
 (rule
@@ -174,10 +174,10 @@
 
         (= ?dt (dtype ?a))
         (= ?dt (dtype ?b))
-        (cublaslt_base_dtype ?dt)
+        (hipblaslt_base_dtype ?dt)
     )
     (
-        (let ?sgemm (Op (cublaslt
+        (let ?sgemm (Op (hipblaslt
             ?m ?n ?k
             "N" "N"
             "COL" "COL" "ROW" "ROW"
@@ -196,7 +196,7 @@
         (set (dtype ?sgemm) ?dt)
     )
     :ruleset matmul_backend
-    :name "cublaslt row-order column-major x column-major"
+    :name "hipblaslt row-order column-major x column-major"
 )
 
 (rule
@@ -237,10 +237,10 @@
 
         (= ?dt (dtype ?a))
         (= ?dt (dtype ?b))
-        (cublaslt_base_dtype ?dt)
+        (hipblaslt_base_dtype ?dt)
     )
     (
-        (let ?sgemm (Op (cublaslt
+        (let ?sgemm (Op (hipblaslt
             ?m ?n ?k
             "N" "N"
             "ROW" "ROW" "ROW" "ROW"
@@ -259,7 +259,7 @@
         (set (dtype ?sgemm) ?dt)
     )
     :ruleset matmul_backend
-    :name "cublaslt row-order batched row-major x row-major"
+    :name "hipblaslt row-order batched row-major x row-major"
 )
 
 (rule
@@ -300,10 +300,10 @@
 
         (= ?dt (dtype ?a))
         (= ?dt (dtype ?b))
-        (cublaslt_base_dtype ?dt)
+        (hipblaslt_base_dtype ?dt)
     )
     (
-        (let ?sgemm (Op (cublaslt
+        (let ?sgemm (Op (hipblaslt
             ?m ?n ?k
             "N" "N"
             "ROW" "COL" "ROW" "ROW"
@@ -322,7 +322,7 @@
         (set (dtype ?sgemm) ?dt)
     )
     :ruleset matmul_backend
-    :name "cublaslt row-order batched row-major x column-major"
+    :name "hipblaslt row-order batched row-major x column-major"
 )
 
 (rule
@@ -363,10 +363,10 @@
 
         (= ?dt (dtype ?a))
         (= ?dt (dtype ?b))
-        (cublaslt_base_dtype ?dt)
+        (hipblaslt_base_dtype ?dt)
     )
     (
-        (let ?sgemm (Op (cublaslt
+        (let ?sgemm (Op (hipblaslt
             ?m ?n ?k
             "N" "N"
             "COL" "ROW" "ROW" "ROW"
@@ -385,7 +385,7 @@
         (set (dtype ?sgemm) ?dt)
     )
     :ruleset matmul_backend
-    :name "cublaslt row-order batched column-major x row-major"
+    :name "hipblaslt row-order batched column-major x row-major"
 )
 
 (rule
@@ -426,10 +426,10 @@
 
         (= ?dt (dtype ?a))
         (= ?dt (dtype ?b))
-        (cublaslt_base_dtype ?dt)
+        (hipblaslt_base_dtype ?dt)
     )
     (
-        (let ?sgemm (Op (cublaslt
+        (let ?sgemm (Op (hipblaslt
             ?m ?n ?k
             "N" "N"
             "COL" "COL" "ROW" "ROW"
@@ -448,5 +448,5 @@
         (set (dtype ?sgemm) ?dt)
     )
     :ruleset matmul_backend
-    :name "cublaslt row-order batched column-major x column-major"
+    :name "hipblaslt row-order batched column-major x column-major"
 )

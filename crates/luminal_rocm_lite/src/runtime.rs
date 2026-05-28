@@ -1,6 +1,6 @@
 use crate::{
     host::{DeviceBuffer, HostOp},
-    kernel::{CudaGraphTiming, KernelOp, record_cuda_graph_timings},
+    kernel::{RocmGraphTiming, KernelOp, record_rocm_graph_timings},
 };
 use rocmrc::driver::{HipFunction, HipModule, HipSlice, HipStream, result};
 
@@ -139,7 +139,7 @@ pub struct RocmRuntime {
     pub hlir_buffers: FxHashMap<NodeIndex, RocmInput>,
     hip_stream: Arc<HipStream>,
     changed_hlir: FxHashSet<NodeIndex>,
-    pub(crate) cuda_graph_timings: Vec<(CudaGraphTiming, Uuid)>,
+    pub(crate) rocm_graph_timings: Vec<(RocmGraphTiming, Uuid)>,
     pub last_kernel_stats: Vec<KernelStats>,
     pub last_total_time_us: f64,
     kernel_cache: FxHashMap<String, (Arc<HipModule>, HipFunction)>,
@@ -541,7 +541,7 @@ impl RocmRuntime {
             self.external_output_buffers
                 .insert(data_node, std::mem::ManuallyDrop::new(slice));
 
-            // Update cached_buffer_ptrs so CudaGraphOp picks up the new pointer
+            // Update cached_buffer_ptrs so RocmGraphOp picks up the new pointer
             self.compiled_buckets[self.active_bucket]
                 .cached_buffer_ptrs
                 .insert(data_node, device_ptr);
@@ -1012,7 +1012,7 @@ impl RocmRuntime {
             }
         }
 
-        // CUDA graph building is now handled internally by CudaGraphOp on first execution
+        // CUDA graph building is now handled internally by RocmGraphOp on first execution
     }
 }
 
@@ -1148,7 +1148,7 @@ fn host_data_inputs(
     llir_graph
         .edges_directed(host_op_node_index, Direction::Incoming)
         .sorted_by_key(|e| e.id())
-        // CudaGraphOp -> HostOp edges are ordering edges added by kernel_to_host.
+        // RocmGraphOp -> HostOp edges are ordering edges added by kernel_to_host.
         // They must remain in exec_graph, but they are not data pointers.
         .filter(|e| !is_schedule_only_host_source(llir_graph, e.source()))
         .map(|e| e.source())
@@ -1205,7 +1205,7 @@ impl Runtime for RocmRuntime {
             hlir_buffers: FxHashMap::default(),
             hip_stream: stream,
             changed_hlir: FxHashSet::default(),
-            cuda_graph_timings: vec![],
+            rocm_graph_timings: vec![],
             last_kernel_stats: vec![],
             last_total_time_us: 0.0,
             kernel_cache: FxHashMap::default(),
@@ -1676,7 +1676,7 @@ impl RocmRuntime {
                 //
                 // BUT — and this was the cause of the YOLO crash: if such
                 // a node has a *consumer in a different region*, that
-                // consumer's CudaGraphOp will look up a device pointer for
+                // consumer's RocmGraphOp will look up a device pointer for
                 // the producer in the runtime's buffer_map and find none,
                 // pass NULL into the kernel, and dereference it →
                 // `CUDA_ERROR_ILLEGAL_ADDRESS`. Multi-consumer fan-out is
@@ -2003,7 +2003,7 @@ impl RocmRuntime {
         perfetto_guard.stop();
         let data = std::fs::read(&perfetto_guard.path).unwrap();
         let mut trace = luminal_tracing::schema::Trace::decode(data.as_slice()).unwrap();
-        let extra_packets = record_cuda_graph_timings(&trace, &self.cuda_graph_timings);
+        let extra_packets = record_rocm_graph_timings(&trace, &self.rocm_graph_timings);
         trace.packet.extend(extra_packets);
         // Sort ALL packets by timestamp for proper Perfetto visualization
         trace.packet.sort_by_key(|p| p.timestamp.unwrap_or(0));

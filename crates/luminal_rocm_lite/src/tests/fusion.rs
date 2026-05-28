@@ -3,7 +3,7 @@ use luminal::egglog_utils::{egglog_to_llir, random_initial_choice};
 use luminal::prelude::*;
 
 use crate::kernel::KernelOp;
-use crate::kernel::fusion::{CudaBinaryElementwise, CudaUnaryElementwise};
+use crate::kernel::fusion::{RocmBinaryElementwise, RocmUnaryElementwise};
 use crate::runtime::RocmRuntime;
 use crate::tests::utilities::{
     TOLERANCE_SAFETY_FACTOR, dtype_epsilon, random_f32_vec, test_binary_cuda, test_unary_cuda,
@@ -320,9 +320,9 @@ fn extract_all_fused_regions(cx: &mut Graph) -> Vec<FusedRegion> {
         let name_of = |idx: NodeIndex| -> Option<String> {
             llir.node_weight(idx).and_then(|op| {
                 op.to_dialect::<dyn KernelOp>().map(|k| {
-                    if let Some(elem) = (***k).downcast_ref::<CudaUnaryElementwise>() {
+                    if let Some(elem) = (***k).downcast_ref::<RocmUnaryElementwise>() {
                         format!("Fused{}", elem.op)
-                    } else if let Some(elem) = (***k).downcast_ref::<CudaBinaryElementwise>() {
+                    } else if let Some(elem) = (***k).downcast_ref::<RocmBinaryElementwise>() {
                         format!("Fused{}", elem.op)
                     } else {
                         k.kernel_name().to_string()

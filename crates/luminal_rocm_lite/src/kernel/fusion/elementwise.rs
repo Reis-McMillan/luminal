@@ -21,7 +21,7 @@ use luminal::{
 
 use crate::kernel::KernelOp;
 
-pub type Ops = (CudaUnaryElementwise, CudaBinaryElementwise);
+pub type Ops = (RocmUnaryElementwise, RocmBinaryElementwise);
 
 type CompileOut = (
     HipFunction,
@@ -38,7 +38,7 @@ fn extract_string_label(egraph: &SerializedEGraph, node: &ENodeId) -> String {
 }
 
 #[derive(Default, Debug, Clone)]
-pub struct CudaUnaryElementwise {
+pub struct RocmUnaryElementwise {
     pub(crate) op: String,
     pub(crate) shape: Vec<Expression>,
     pub(crate) in_strides: Vec<Expression>,
@@ -46,11 +46,11 @@ pub struct CudaUnaryElementwise {
     pub(crate) dtype: DType,
 }
 
-impl EgglogOp for CudaUnaryElementwise {
+impl EgglogOp for RocmUnaryElementwise {
     fn sort(&self) -> SortDef {
         sort(
             OP_KIND,
-            "CudaUnaryElementwise",
+            "RocmUnaryElementwise",
             &[
                 ("op", STRING),
                 ("shape", ELIST),
@@ -80,7 +80,7 @@ impl EgglogOp for CudaUnaryElementwise {
                     (= ?dt (dtype ?u))
                  ) (
                     (let ?fs (Op (FusionStart ?shape ?s ?dt) (ICons ?x (INil))))
-                    (let ?elem (Op (CudaUnaryElementwise \"{opcode}\" ?shape ?s ?out_s ?dt)
+                    (let ?elem (Op (RocmUnaryElementwise \"{opcode}\" ?shape ?s ?out_s ?dt)
                                    (ICons ?fs (INil))))
                     (let ?fe (Op (FusionEnd ?shape ?out_s ?dt) (ICons ?elem (INil))))
                     (union ?u ?fe)
@@ -102,7 +102,7 @@ impl EgglogOp for CudaUnaryElementwise {
                 )
                 (
                     (let ?fs (Op (FusionStart ?shape ?x_stride ?dt) (ICons ?x (INil))))
-                    (let ?elem (Op (CudaUnaryElementwise \"Exp\" ?shape ?x_stride ?out_stride ?dt)
+                    (let ?elem (Op (RocmUnaryElementwise \"Exp\" ?shape ?x_stride ?out_stride ?dt)
                                    (ICons ?fs (INil))))
                     (let ?fe (Op (FusionEnd ?shape ?out_stride ?dt) (ICons ?elem (INil))))
                     (union ?exp2 ?fe)
@@ -154,7 +154,7 @@ impl EgglogOp for CudaUnaryElementwise {
             )
             (
                 (let ?fs (Op (FusionStart ?shape ?x_stride ?dt) (ICons ?x (INil))))
-                (let ?elem (Op (CudaUnaryElementwise \"Sigmoid\" ?shape ?x_stride ?out_stride ?dt)
+                (let ?elem (Op (RocmUnaryElementwise \"Sigmoid\" ?shape ?x_stride ?out_stride ?dt)
                                (ICons ?fs (INil))))
                 (let ?fe (Op (FusionEnd ?shape ?out_stride ?dt) (ICons ?elem (INil))))
                 (union ?sig_out ?fe)
@@ -195,13 +195,13 @@ impl EgglogOp for CudaUnaryElementwise {
     }
 }
 
-impl KernelOp for CudaUnaryElementwise {
+impl KernelOp for RocmUnaryElementwise {
     fn compile(
         &self,
         _stream: &Arc<HipStream>,
         _compile_cache: &mut FxHashMap<String, (Arc<HipModule>, HipFunction)>,
     ) -> CompileOut {
-        unreachable!("CudaUnaryElementwise must be compiled through fusion region codegen")
+        unreachable!("RocmUnaryElementwise must be compiled through fusion region codegen")
     }
 
     fn output_size(&self) -> Expression {
@@ -229,12 +229,12 @@ impl KernelOp for CudaUnaryElementwise {
     }
 
     fn kernel_name(&self) -> &'static str {
-        "CudaUnaryElementwise"
+        "RocmUnaryElementwise"
     }
 }
 
 #[derive(Default, Debug, Clone)]
-pub struct CudaBinaryElementwise {
+pub struct RocmBinaryElementwise {
     pub(crate) op: String,
     pub(crate) out_shape: Vec<Expression>,
     pub(crate) a_stride: Vec<Expression>,
@@ -243,11 +243,11 @@ pub struct CudaBinaryElementwise {
     pub(crate) dtype: DType,
 }
 
-impl EgglogOp for CudaBinaryElementwise {
+impl EgglogOp for RocmBinaryElementwise {
     fn sort(&self) -> SortDef {
         sort(
             OP_KIND,
-            "CudaBinaryElementwise",
+            "RocmBinaryElementwise",
             &[
                 ("op", STRING),
                 ("shape", ELIST),
@@ -272,7 +272,7 @@ impl EgglogOp for CudaBinaryElementwise {
                  ) (
                     (let ?fs_a (Op (FusionStart ?shape ?a_s ?dt) (ICons ?a (INil))))
                     (let ?fs_b (Op (FusionStart ?shape ?b_s ?dt) (ICons ?b (INil))))
-                    (let ?elem (Op (CudaBinaryElementwise \"Add\" ?shape ?a_s ?b_s ?out_s ?dt)
+                    (let ?elem (Op (RocmBinaryElementwise \"Add\" ?shape ?a_s ?b_s ?out_s ?dt)
                                    (ICons ?fs_a (ICons ?fs_b (INil)))))
                     (let ?fe (Op (FusionEnd ?shape ?out_s ?dt) (ICons ?elem (INil))))
                     (union ?bin ?fe)
@@ -286,7 +286,7 @@ impl EgglogOp for CudaBinaryElementwise {
                  ) (
                     (let ?fs_a (Op (FusionStart ?shape ?a_s ?dt) (ICons ?a (INil))))
                     (let ?fs_b (Op (FusionStart ?shape ?b_s ?dt) (ICons ?b (INil))))
-                    (let ?elem (Op (CudaBinaryElementwise \"Mul\" ?shape ?a_s ?b_s ?out_s ?dt)
+                    (let ?elem (Op (RocmBinaryElementwise \"Mul\" ?shape ?a_s ?b_s ?out_s ?dt)
                                    (ICons ?fs_a (ICons ?fs_b (INil)))))
                     (let ?fe (Op (FusionEnd ?shape ?out_s ?dt) (ICons ?elem (INil))))
                     (union ?bin ?fe)
@@ -339,13 +339,13 @@ impl EgglogOp for CudaBinaryElementwise {
     }
 }
 
-impl KernelOp for CudaBinaryElementwise {
+impl KernelOp for RocmBinaryElementwise {
     fn compile(
         &self,
         _stream: &Arc<HipStream>,
         _compile_cache: &mut FxHashMap<String, (Arc<HipModule>, HipFunction)>,
     ) -> CompileOut {
-        unreachable!("CudaBinaryElementwise must be compiled through fusion region codegen")
+        unreachable!("RocmBinaryElementwise must be compiled through fusion region codegen")
     }
 
     fn output_size(&self) -> Expression {
@@ -373,6 +373,6 @@ impl KernelOp for CudaBinaryElementwise {
     }
 
     fn kernel_name(&self) -> &'static str {
-        "CudaBinaryElementwise"
+        "RocmBinaryElementwise"
     }
 }

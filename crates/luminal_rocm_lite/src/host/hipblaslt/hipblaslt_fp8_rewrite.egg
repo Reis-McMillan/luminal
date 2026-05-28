@@ -1,4 +1,4 @@
-; FP8 support is narrower than "any FP8 x any FP8". cuBLASLt's regular FP8
+; FP8 support is narrower than "any FP8 x any FP8". hipBLASLt's regular FP8
 ; matmul table supports these A/B descriptor pairs for F32 outputs:
 ;   E4M3 x E4M3
 ;   E4M3 x E5M2
@@ -56,10 +56,10 @@
         (= ?b_k_stride (MIter))
 
         (= ?b_dtype (dtype ?b))
-        (cublaslt_fp8_f32_output_pair ?a_dtype ?b_dtype)
+        (hipblaslt_fp8_f32_output_pair ?a_dtype ?b_dtype)
     )
     (
-        (let ?sgemm (Op (cublaslt_scaled
+        (let ?sgemm (Op (hipblaslt_scaled
             ?n ?m ?k
             "T" "N"
             "COL" "COL" "COL" "COL"
@@ -78,7 +78,7 @@
         (set (dtype ?sgemm) (F32))
     )
 :ruleset matmul_backend
-:name "cublaslt scaled fp8 row-major x column-major f32 output"
+:name "hipblaslt scaled fp8 row-major x column-major f32 output"
 )
 
 (rule
@@ -127,8 +127,8 @@
         (= ?b_k_stride (MIter))
 
         (= ?b_dtype (dtype ?b))
-        (cublaslt_fp8_f32_output_pair ?a_dtype ?b_dtype)
-        (= ?scaled (Op (cublaslt_scaled
+        (hipblaslt_fp8_f32_output_pair ?a_dtype ?b_dtype)
+        (= ?scaled (Op (hipblaslt_scaled
             ?n ?m ?k
             "T" "N"
             "COL" "COL" "COL" "COL"
@@ -143,7 +143,7 @@
             (MNum 0)
             ?b_dtype ?a_dtype (F32) (F32) "32F" "F32" 1.0 0.0 "DEFAULT")
             (ICons ?b (ICons ?a (ICons ?weight_scale (ICons ?input_scale (INil)))))))
-        (= ?cast (Op (cublaslt
+        (= ?cast (Op (hipblaslt
             ?n ?m ?k
             "T" "N"
             "COL" "COL" "COL" "COL"
@@ -166,7 +166,7 @@
             (ECons (MNum 0) (ECons (MNum 0) (ENil)))
             ?scaled_out_strides)
             (ICons ?cast (ICons ?scale_product (INil)))))
-        (delete (Op (cublaslt
+        (delete (Op (hipblaslt
             ?n ?m ?k
             "T" "N"
             "COL" "COL" "COL" "COL"
@@ -183,17 +183,17 @@
             (ICons ?b (ICons ?a (INil)))))
     )
     :ruleset cleanup
-    :name "delete raw fp8 path when scaled cublaslt covers direct output scale"
+    :name "delete raw fp8 path when scaled hipblaslt covers direct output scale"
 )
 
 (rule
     (
-        ; Fusion growth can make the live path consume a raw FP8 cuBLASLt
+        ; Fusion growth can make the live path consume a raw FP8 hipBLASLt
         ; candidate through an internal CudaBinaryElementwise scale multiply,
         ; instead of the original HLIR output-scale Mul. The scalar scale
         ; product is tensor-wide, so the two scalar factors can be passed as
-        ; cuBLASLt A/B scale inputs and the internal multiply can be bypassed.
-        (= ?raw_gemm (Op (cublaslt
+        ; hipBLASLt A/B scale inputs and the internal multiply can be bypassed.
+        (= ?raw_gemm (Op (hipblaslt
             ?cm ?cn ?ck
             ?cta ?ctb
             ?cao ?cbo ?cco ?cdo
@@ -201,7 +201,7 @@
             ?cbc ?csa ?csb ?csc ?csd
             ?cadt ?cbdt ?ccdt ?cddt ?ccompute ?cscale ?calpha ?cbeta ?cepilogue)
             (ICons ?a (ICons ?b (INil)))))
-        (cublaslt_fp8_f32_output_pair ?cadt ?cbdt)
+        (hipblaslt_fp8_f32_output_pair ?cadt ?cbdt)
         (= ?ccdt (F32))
         (= ?cddt (F32))
         (= ?cbeta 0.0)
@@ -246,7 +246,7 @@
         (= ?cast_strides ?scaled_out_strides)
     )
     (
-        (let ?sgemm (Op (cublaslt_scaled
+        (let ?sgemm (Op (hipblaslt_scaled
             ?cm ?cn ?ck
             ?cta ?ctb
             ?cao ?cbo ?cco ?cdo
@@ -261,12 +261,12 @@
         (set (dtype ?fs_sgemm) (F32))
     )
     :ruleset fusion_grow
-    :name "cublaslt scaled fp8 fused output-scale f32 output"
+    :name "hipblaslt scaled fp8 fused output-scale f32 output"
 )
 
 (rule
     (
-        (= ?raw_gemm (Op (cublaslt
+        (= ?raw_gemm (Op (hipblaslt
             ?cm ?cn ?ck
             ?cta ?ctb
             ?cao ?cbo ?cco ?cdo
@@ -274,7 +274,7 @@
             ?cbc ?csa ?csb ?csc ?csd
             ?cadt ?cbdt ?ccdt ?cddt ?ccompute ?cscale ?calpha ?cbeta ?cepilogue)
             (ICons ?a (ICons ?b (INil)))))
-        (cublaslt_fp8_f32_output_pair ?cadt ?cbdt)
+        (hipblaslt_fp8_f32_output_pair ?cadt ?cbdt)
         (= ?ccdt (F32))
         (= ?cddt (F32))
         (= ?cbeta 0.0)
@@ -318,7 +318,7 @@
             (ICons ?fs_cast (ICons ?fs_scale (INil)))))
         (= ?cast_strides ?scaled_out_strides)
 
-        (= ?sgemm (Op (cublaslt_scaled
+        (= ?sgemm (Op (hipblaslt_scaled
             ?cm ?cn ?ck
             ?cta ?ctb
             ?cao ?cbo ?cco ?cdo
@@ -330,7 +330,7 @@
             (ICons ?sgemm (INil))))
     )
     (
-        (delete (Op (cublaslt
+        (delete (Op (hipblaslt
             ?cm ?cn ?ck
             ?cta ?ctb
             ?cao ?cbo ?cco ?cdo
@@ -348,7 +348,7 @@
             (ICons ?fs_cast (ICons ?fs_scale (INil)))))
     )
     :ruleset cleanup
-    :name "delete raw fp8 path when scaled cublaslt covers fused output scale"
+    :name "delete raw fp8 path when scaled hipblaslt covers fused output scale"
 )
 
 (rule
@@ -413,10 +413,10 @@
         (= ?b_batch_stride (MMul ?n ?b_n_stride))
 
         (= ?b_dtype (dtype ?b))
-        (cublaslt_fp8_f32_output_pair ?a_dtype ?b_dtype)
+        (hipblaslt_fp8_f32_output_pair ?a_dtype ?b_dtype)
     )
     (
-        (let ?sgemm (Op (cublaslt_scaled
+        (let ?sgemm (Op (hipblaslt_scaled
             ?n ?m ?k
             "T" "N"
             "COL" "COL" "COL" "COL"
@@ -435,7 +435,7 @@
         (set (dtype ?sgemm) (F32))
     )
 :ruleset matmul_backend
-:name "cublaslt scaled fp8 batched row-major x column-major f32 output"
+:name "hipblaslt scaled fp8 batched row-major x column-major f32 output"
 )
 
 (rule
@@ -465,7 +465,7 @@
         (= (F8E4M3) (dtype ?b))
     )
     (
-        (let ?sgemm (Op (cublaslt
+        (let ?sgemm (Op (hipblaslt
             ?n ?m ?k
             "T" "N"
             "COL" "COL" "COL" "COL"
@@ -484,7 +484,7 @@
         (set (dtype ?sgemm) (F32))
     )
     :ruleset matmul_backend
-    :name "cublaslt fp8 e4m3/e4m3 row-major x column-major f32 output"
+    :name "hipblaslt fp8 e4m3/e4m3 row-major x column-major f32 output"
 )
 
 (rule
@@ -514,7 +514,7 @@
         (= (F8E5M2) (dtype ?b))
     )
     (
-        (let ?sgemm (Op (cublaslt
+        (let ?sgemm (Op (hipblaslt
             ?n ?m ?k
             "T" "N"
             "COL" "COL" "COL" "COL"
@@ -533,7 +533,7 @@
         (set (dtype ?sgemm) (F32))
     )
     :ruleset matmul_backend
-    :name "cublaslt fp8 e5m2/e4m3 row-major x column-major f32 output"
+    :name "hipblaslt fp8 e5m2/e4m3 row-major x column-major f32 output"
 )
 
 (rule
@@ -563,7 +563,7 @@
         (= (F8E4M3) (dtype ?b))
     )
     (
-        (let ?sgemm (Op (cublaslt
+        (let ?sgemm (Op (hipblaslt
             ?n ?m ?k
             "T" "N"
             "COL" "COL" "COL" "COL"
@@ -582,7 +582,7 @@
         (set (dtype ?sgemm) (F32))
     )
     :ruleset matmul_backend
-    :name "cublaslt fp8 e4m3/e5m2 row-major x column-major f32 output"
+    :name "hipblaslt fp8 e4m3/e5m2 row-major x column-major f32 output"
 )
 
 (rule
@@ -626,7 +626,7 @@
         (= (F8E4M3) (dtype ?b))
     )
     (
-        (let ?sgemm (Op (cublaslt
+        (let ?sgemm (Op (hipblaslt
             ?n ?m ?k
             "T" "N"
             "COL" "COL" "COL" "COL"
@@ -645,7 +645,7 @@
         (set (dtype ?sgemm) (F32))
     )
     :ruleset matmul_backend
-    :name "cublaslt fp8 e4m3/e4m3 batched row-major x column-major f32 output"
+    :name "hipblaslt fp8 e4m3/e4m3 batched row-major x column-major f32 output"
 )
 
 (rule
@@ -689,7 +689,7 @@
         (= (F8E5M2) (dtype ?b))
     )
     (
-        (let ?sgemm (Op (cublaslt
+        (let ?sgemm (Op (hipblaslt
             ?n ?m ?k
             "T" "N"
             "COL" "COL" "COL" "COL"
@@ -708,7 +708,7 @@
         (set (dtype ?sgemm) (F32))
     )
     :ruleset matmul_backend
-    :name "cublaslt fp8 e5m2/e4m3 batched row-major x column-major f32 output"
+    :name "hipblaslt fp8 e5m2/e4m3 batched row-major x column-major f32 output"
 )
 
 (rule
@@ -752,7 +752,7 @@
         (= (F8E4M3) (dtype ?b))
     )
     (
-        (let ?sgemm (Op (cublaslt
+        (let ?sgemm (Op (hipblaslt
             ?n ?m ?k
             "T" "N"
             "COL" "COL" "COL" "COL"
@@ -771,5 +771,5 @@
         (set (dtype ?sgemm) (F32))
     )
     :ruleset matmul_backend
-    :name "cublaslt fp8 e4m3/e5m2 batched row-major x column-major f32 output"
+    :name "hipblaslt fp8 e4m3/e5m2 batched row-major x column-major f32 output"
 )

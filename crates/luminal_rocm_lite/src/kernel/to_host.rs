@@ -1,6 +1,6 @@
-//! Compiles KernelOp subgraphs into HostOp (CudaGraphOp).
+//! Compiles KernelOp subgraphs into HostOp (RocmGraphOp).
 //!
-//! CudaGraphOp wraps a subgraph of KernelOps into a single executable unit
+//! RocmGraphOp wraps a subgraph of KernelOps into a single executable unit
 //! that can be executed like any other HostOp.
 
 use std::cell::RefCell;
@@ -25,15 +25,15 @@ use tracing::{Level, enabled, span};
 use crate::{
     host::{DeviceBuffer, HostOp},
     kernel::{
-        HipFunctionExt, CudaGraphExecHandle, CudaGraphHandle, KernelOp, create_cuda_event,
-        destroy_cuda_event,
+        HipFunctionExt, RocmGraphExecHandle, RocmGraphHandle, KernelOp, create_rocm_event,
+        destroy_rocm_event,
         fusion::region_codegen::{self, CompileUnit},
         hlir::{clear_global_dyn_dims, get_global_dyn_dims, set_global_dyn_dims},
     },
     runtime::partition_marked_convex,
 };
 
-/// A compiled kernel within a CudaGraphOp.
+/// A compiled kernel within a RocmGraphOp.
 #[derive(Debug)]
 struct CompiledKernel {
     /// The node index in the original llir_graph
@@ -112,7 +112,7 @@ impl UnifiedKernelParams {
         Self { values, ptrs }
     }
 
-    fn as_cuda_params(&mut self) -> *mut *mut std::ffi::c_void {
+    fn as_rocm_params(&mut self) -> *mut *mut std::ffi::c_void {
         // Rebuild pointers (in case struct was moved)
         for (i, v) in self.values.iter().enumerate() {
             self.ptrs[i] = v as *const u64 as *mut std::ffi::c_void;
@@ -121,16 +121,16 @@ impl UnifiedKernelParams {
     }
 }
 
-/// Mutable state for CudaGraphOp that needs interior mutability.
+/// Mutable state for RocmGraphOp that needs interior mutability.
 struct CudaGraphOpState {
     /// Compiled kernels in topological order
     kernels: Vec<CompiledKernel>,
     /// Shared device buffer for dynamic dimensions
     dyn_dims_buffer: Option<HipSlice<i32>>,
     /// CUDA graph handle
-    cuda_graph: Option<CudaGraphHandle>,
+    cuda_graph: Option<RocmGraphHandle>,
     /// CUDA graph exec handle
-    cuda_graph_exec: Option<CudaGraphExecHandle>,
+    cuda_graph_exec: Option<RocmGraphExecHandle>,
     /// Mapping from kernel node to graph node
     node_to_graph_node: FxHashMap<NodeIndex, hipGraphNode_t>,
     /// Kernel params for each kernel
@@ -163,7 +163,7 @@ impl CudaGraphOpState {
 ///
 /// This wraps a subgraph of KernelOps into a single executable CUDA graph.
 /// It manages graph building, execution, and dynamic updates.
-pub struct CudaGraphOp {
+pub struct RocmGraphOp {
     /// All nodes that this graph needs buffers for (kernels + their inputs)
     buffer_nodes: Vec<NodeIndex>,
     /// Buffer size requirements for extra nodes (node -> size in elements)
@@ -176,7 +176,7 @@ pub struct CudaGraphOp {
     state: RefCell<CudaGraphOpState>,
 }
 
-impl CudaGraphOp {
+impl RocmGraphOp {
     fn new(
         buffer_nodes: Vec<NodeIndex>,
         buffer_sizes: FxHashMap<NodeIndex, Expression>,
@@ -193,7 +193,7 @@ impl CudaGraphOp {
         }
     }
 
-    /// LLIR node IDs of every kernel in this CudaGraphOp, in the order
+    /// LLIR node IDs of every kernel in this RocmGraphOp, in the order
     /// they execute inside the compiled CUDA graph. This is the
     /// toposort `kernel_to_host` used at compile time, preserved here
     /// so the runtime can compute live ranges that match real
@@ -204,11 +204,11 @@ impl CudaGraphOp {
         self.state.borrow().kernels.iter().map(|k| k.node).collect()
     }
 
-    /// Direct LLIR-node inputs of one kernel inside this CudaGraphOp.
+    /// Direct LLIR-node inputs of one kernel inside this RocmGraphOp.
     /// Used by the runtime's live-range pass to refine intra-graph
     /// consumer positions: a kernel's input can stop being live as
     /// soon as that specific kernel finishes, not when the whole
-    /// CudaGraphOp finishes.
+    /// RocmGraphOp finishes.
     pub fn kernel_inputs(&self, kernel_node: NodeIndex) -> Vec<NodeIndex> {
         self.state
             .borrow()
@@ -220,19 +220,19 @@ impl CudaGraphOp {
     }
 }
 
-impl std::fmt::Debug for CudaGraphOp {
+impl std::fmt::Debug for RocmGraphOp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let state = self.state.borrow();
-        f.debug_struct("CudaGraphOp")
+        f.debug_struct("RocmGraphOp")
             .field("n_kernels", &state.kernels.len())
             .field("n_buffer_nodes", &self.buffer_nodes.len())
             .finish()
     }
 }
 
-impl EgglogOp for CudaGraphOp {
+impl EgglogOp for RocmGraphOp {
     fn sort(&self) -> luminal::egglog_utils::api::SortDef {
-        luminal::egglog_utils::api::sort(OP_KIND, "CudaGraphOp", &[])
+        luminal::egglog_utils::api::sort(OP_KIND, "RocmGraphOp", &[])
     }
 
     fn rewrites(&self) -> Vec<Rule> {
@@ -247,7 +247,7 @@ impl EgglogOp for CudaGraphOp {
         _list_cache: &mut FxHashMap<&'a luminal::prelude::ENodeId, Vec<Expression>>,
         _expr_cache: &mut FxHashMap<&'a luminal::prelude::ENodeId, Expression>,
     ) -> (LLIROp, Vec<&'a luminal::prelude::ENodeId>) {
-        panic!("CudaGraphOp should not be extracted from egglog")
+        panic!("RocmGraphOp should not be extracted from egglog")
     }
 
     fn cleanup(&self) -> bool {
@@ -255,7 +255,7 @@ impl EgglogOp for CudaGraphOp {
     }
 }
 
-impl HostOp for CudaGraphOp {
+impl HostOp for RocmGraphOp {
     fn execute(
         &self,
         stream: &Arc<HipStream>,
@@ -268,12 +268,12 @@ impl HostOp for CudaGraphOp {
     }
 
     fn output_size(&self) -> Expression {
-        // CudaGraphOp doesn't have a single output - individual kernels have outputs
+        // RocmGraphOp doesn't have a single output - individual kernels have outputs
         0.into()
     }
 
     fn output_bytes(&self) -> Expression {
-        // CudaGraphOp doesn't have a single output - individual kernels have outputs
+        // RocmGraphOp doesn't have a single output - individual kernels have outputs
         0.into()
     }
 
@@ -332,11 +332,11 @@ impl HostOp for CudaGraphOp {
     }
 
     fn stats_name(&self) -> Option<&'static str> {
-        Some("CudaGraph")
+        Some("RocmGraph")
     }
 }
 
-impl CudaGraphOp {
+impl RocmGraphOp {
     fn expected_kernel_inputs(kernel_name: &str) -> Option<usize> {
         match kernel_name {
             "Constant" | "Iota" => Some(0),
@@ -576,7 +576,7 @@ impl CudaGraphOp {
                 let cu_func = unsafe { kernel.function.raw_function() };
 
                 // Get params pointer first to avoid borrowing state twice
-                let params_ptr = state.kernel_params[idx].as_cuda_params();
+                let params_ptr = state.kernel_params[idx].as_rocm_params();
                 let exec = state.cuda_graph_exec.as_mut().unwrap();
                 unsafe {
                     exec.update_kernel_node(
@@ -604,7 +604,7 @@ impl CudaGraphOp {
         dyn_map: &FxHashMap<char, usize>,
     ) -> anyhow::Result<()> {
         let ctx = stream.context().clone();
-        let mut graph = CudaGraphHandle::new(ctx.clone())?;
+        let mut graph = RocmGraphHandle::new(ctx.clone())?;
 
         let num_kernels = state.kernels.len();
         state.kernel_params.clear();
@@ -614,7 +614,7 @@ impl CudaGraphOp {
         if tracing_enabled {
             let needed_events = num_kernels + 1;
             while state.timing_events.len() < needed_events {
-                state.timing_events.push(create_cuda_event(&ctx)?);
+                state.timing_events.push(create_rocm_event(&ctx)?);
             }
         }
 
@@ -755,7 +755,7 @@ impl CudaGraphOp {
                     grid_dim,
                     block_dim,
                     shared_mem,
-                    params.as_cuda_params(),
+                    params.as_rocm_params(),
                 )?
             };
 
@@ -780,7 +780,7 @@ impl CudaGraphOp {
     }
 }
 
-impl Drop for CudaGraphOp {
+impl Drop for RocmGraphOp {
     fn drop(&mut self) {
         let mut state = self.state.borrow_mut();
 
@@ -788,7 +788,7 @@ impl Drop for CudaGraphOp {
         let ctx = state.cuda_graph_exec.as_ref().map(|exec| exec.ctx.clone());
         if let Some(ctx) = ctx {
             for event in state.timing_events.drain(..) {
-                destroy_cuda_event(&ctx, event);
+                destroy_rocm_event(&ctx, event);
             }
         }
 
@@ -817,11 +817,11 @@ impl Drop for CudaGraphOp {
 /// This function:
 /// 1. Finds all KernelOp nodes in the graph
 /// 2. Partitions them into convex subgraphs
-/// 3. For each subgraph, creates a CudaGraphOp (which implements HostOp)
-/// 4. Adds the CudaGraphOp node to the llir_graph with appropriate edges
+/// 3. For each subgraph, creates a RocmGraphOp (which implements HostOp)
+/// 4. Adds the RocmGraphOp node to the llir_graph with appropriate edges
 ///
 /// Note: KernelOp nodes remain in the graph for buffer allocation and edge tracking.
-/// Their execution is handled by the CudaGraphOp via the CUDA graph API.
+/// Their execution is handled by the RocmGraphOp via the CUDA graph API.
 #[allow(clippy::type_complexity)]
 pub fn kernel_to_host(
     llir_graph: &mut LLIRGraph,
@@ -876,9 +876,9 @@ pub fn kernel_to_host(
         node
     };
 
-    // Track which kernel node belongs to which CudaGraphOp (for later edge creation)
+    // Track which kernel node belongs to which RocmGraphOp (for later edge creation)
     let mut kernel_to_cuda_graph: FxHashMap<NodeIndex, NodeIndex> = FxHashMap::default();
-    // Track all CudaGraphOp nodes and their subgraphs for edge creation
+    // Track all RocmGraphOp nodes and their subgraphs for edge creation
     let mut cuda_graph_subgraphs: Vec<(NodeIndex, FxHashSet<NodeIndex>)> = Vec::new();
 
     for subgraph in kernel_subgraphs {
@@ -936,7 +936,7 @@ pub fn kernel_to_host(
                         .map(|input| resolve_transparent_input(llir_graph, input))
                         .collect_vec();
                     if let Some(expected_inputs) =
-                        CudaGraphOp::expected_kernel_inputs(kernel_op_ref.kernel_name())
+                        RocmGraphOp::expected_kernel_inputs(kernel_op_ref.kernel_name())
                     {
                         assert_eq!(
                             inputs.len(),
@@ -1069,10 +1069,10 @@ pub fn kernel_to_host(
 
         let buffer_nodes: Vec<NodeIndex> = all_buffer_nodes.into_iter().collect();
 
-        // Create CudaGraphOp with RefCell for interior mutability
+        // Create RocmGraphOp with RefCell for interior mutability
         let state = CudaGraphOpState::new(kernels);
 
-        let cuda_graph_op = CudaGraphOp::new(
+        let cuda_graph_op = RocmGraphOp::new(
             buffer_nodes,
             all_buffer_sizes,
             dyn_dims_order,
@@ -1080,11 +1080,11 @@ pub fn kernel_to_host(
             state,
         );
 
-        // Add CudaGraphOp to llir_graph as a HostOp
+        // Add RocmGraphOp to llir_graph as a HostOp
         let cuda_graph_node =
             llir_graph.add_node(LLIROp::new(Box::new(cuda_graph_op) as Box<dyn HostOp>));
 
-        // Track which kernel nodes belong to this CudaGraphOp
+        // Track which kernel nodes belong to this RocmGraphOp
         for kernel_node in &subgraph {
             kernel_to_cuda_graph.insert(*kernel_node, cuda_graph_node);
         }
@@ -1102,7 +1102,7 @@ pub fn kernel_to_host(
                 .filter(|src| !subgraph.contains(src))
         }));
 
-        // Add edges from external inputs to CudaGraphOp
+        // Add edges from external inputs to RocmGraphOp
         for input in &external_inputs {
             llir_graph.add_edge(*input, cuda_graph_node, ());
         }
@@ -1111,12 +1111,12 @@ pub fn kernel_to_host(
         // They are needed for:
         // 1. Buffer allocation (their output_size determines buffer sizes)
         // 2. Edge tracking (other ops like cuBLAS reference specific kernel outputs)
-        // The CudaGraphOp handles their execution via the CUDA graph API.
+        // The RocmGraphOp handles their execution via the CUDA graph API.
     }
 
     // Second pass: Add edges between CudaGraphOps based on kernel dependencies.
-    // This ensures proper execution ordering when a kernel in one CudaGraphOp
-    // produces output consumed by a kernel in another CudaGraphOp.
+    // This ensures proper execution ordering when a kernel in one RocmGraphOp
+    // produces output consumed by a kernel in another RocmGraphOp.
     let mut edges_to_add: Vec<(NodeIndex, NodeIndex)> = Vec::new();
 
     for (cuda_graph_node, subgraph) in &cuda_graph_subgraphs {
@@ -1127,7 +1127,7 @@ pub fn kernel_to_host(
                 if subgraph.contains(&consumer) {
                     continue; // Same subgraph
                 }
-                // Check if consumer is a kernel in another CudaGraphOp
+                // Check if consumer is a kernel in another RocmGraphOp
                 if let Some(&consumer_cuda_graph) = kernel_to_cuda_graph.get(&consumer)
                     && consumer_cuda_graph != *cuda_graph_node
                 {
@@ -1144,7 +1144,7 @@ pub fn kernel_to_host(
         }
     }
 
-    // Add each cross-CudaGraphOp dep edge iff it would carry new ordering
+    // Add each cross-RocmGraphOp dep edge iff it would carry new ordering
     // information without closing a cycle. The previous topo-position gate
     // ("skip when src_pos >= dst_pos") was too coarse: it dropped edges
     // whose src happened to land later in the toposort than their dst even

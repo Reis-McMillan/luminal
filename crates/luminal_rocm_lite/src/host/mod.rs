@@ -138,7 +138,7 @@ pub trait HostOp: Debug + as_any::AsAny + EgglogOp {
     ) -> anyhow::Result<()>;
 
     /// Returns the output buffer size in elements.
-    /// Return 0 if this op doesn't have a single output buffer (e.g., CudaGraphOp).
+    /// Return 0 if this op doesn't have a single output buffer (e.g., RocmGraphOp).
     fn output_size(&self) -> Expression;
 
     /// Returns the output buffer size in bytes (accounts for dtype).
@@ -147,7 +147,7 @@ pub trait HostOp: Debug + as_any::AsAny + EgglogOp {
     /// Returns additional nodes (beyond graph edges) that this op needs buffers for.
     ///
     /// For most ops, this returns empty (buffers determined by graph edges).
-    /// For CudaGraphOp, this returns all internal kernel nodes.
+    /// For RocmGraphOp, this returns all internal kernel nodes.
     fn extra_buffer_nodes(&self) -> Vec<NodeIndex> {
         vec![]
     }
@@ -164,7 +164,7 @@ pub trait HostOp: Debug + as_any::AsAny + EgglogOp {
     /// Returns buffer size requirements for extra nodes (node -> size in elements).
     ///
     /// Called during buffer allocation to ensure all required buffers exist.
-    /// For CudaGraphOp, this returns sizes for all internal kernel output buffers.
+    /// For RocmGraphOp, this returns sizes for all internal kernel output buffers.
     fn extra_buffer_sizes(&self) -> FxHashMap<NodeIndex, Expression> {
         FxHashMap::default()
     }

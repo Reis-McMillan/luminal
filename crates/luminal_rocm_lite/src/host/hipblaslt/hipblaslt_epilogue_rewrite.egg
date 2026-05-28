@@ -1,14 +1,14 @@
-; cuBLASLt epilogue rewrites.
+; hipBLASLt epilogue rewrites.
 ;
 ; ReLU in the frontend lowers through maximum_f32(0.0):
 ;
 ;   (matmul < 0) * 0 + cast(cast((-cast(matmul < 0) + 1) as bool) as f32) * matmul
 ;
-; These rules fuse that expression back into CUBLASLT_EPILOGUE_RELU.
+; These rules fuse that expression back into HIPBLASLT_EPILOGUE_RELU.
 
 (rule
     (
-        (= ?matmul (Op (cublaslt
+        (= ?matmul (Op (hipblaslt
             ?m ?n ?k
             ?a_layout ?b_layout
             ?a_order ?b_order ?c_order ?d_order
@@ -68,7 +68,7 @@
             (ICons ?zeroed (ICons ?positive (INil)))))
     )
     (
-        (let ?fused (Op (cublaslt
+        (let ?fused (Op (hipblaslt
             ?m ?n ?k
             ?a_layout ?b_layout
             ?a_order ?b_order ?c_order ?d_order
@@ -83,12 +83,12 @@
         (set (dtype ?fused) (F32))
     )
     :ruleset matmul_backend
-    :name "cublaslt 2d relu epilogue"
+    :name "hipblaslt 2d relu epilogue"
 )
 
 (rule
     (
-        (= ?matmul (Op (cublaslt
+        (= ?matmul (Op (hipblaslt
             ?m ?n ?k
             ?a_layout ?b_layout
             ?a_order ?b_order ?c_order ?d_order
@@ -148,7 +148,7 @@
             (ICons ?zeroed (ICons ?positive (INil)))))
     )
     (
-        (let ?fused (Op (cublaslt
+        (let ?fused (Op (hipblaslt
             ?m ?n ?k
             ?a_layout ?b_layout
             ?a_order ?b_order ?c_order ?d_order
@@ -163,12 +163,12 @@
         (set (dtype ?fused) (F32))
     )
     :ruleset matmul_backend
-    :name "cublaslt batched relu epilogue"
+    :name "hipblaslt batched relu epilogue"
 )
 
 (rule
     (
-        (= ?matmul (Op (cublaslt
+        (= ?matmul (Op (hipblaslt
             ?m ?n ?k
             ?a_layout ?b_layout
             ?a_order ?b_order ?c_order ?d_order
@@ -228,7 +228,7 @@
             (ICons ?zeroed (ICons ?positive (INil)))))
     )
     (
-        (let ?fused (Op (cublaslt
+        (let ?fused (Op (hipblaslt
             ?m ?n ?k
             ?a_layout ?b_layout
             ?a_order ?b_order ?c_order ?d_order
@@ -243,12 +243,12 @@
         (set (dtype ?fused) (F32))
     )
     :ruleset matmul_backend
-    :name "cublaslt 2d relu bias epilogue"
+    :name "hipblaslt 2d relu bias epilogue"
 )
 
 (rule
     (
-        (= ?matmul (Op (cublaslt
+        (= ?matmul (Op (hipblaslt
             ?m ?n ?k
             ?a_layout ?b_layout
             ?a_order ?b_order ?c_order ?d_order
@@ -308,7 +308,7 @@
             (ICons ?zeroed (ICons ?positive (INil)))))
     )
     (
-        (let ?fused (Op (cublaslt
+        (let ?fused (Op (hipblaslt
             ?m ?n ?k
             ?a_layout ?b_layout
             ?a_order ?b_order ?c_order ?d_order
@@ -323,18 +323,18 @@
         (set (dtype ?fused) (F32))
     )
     :ruleset matmul_backend
-    :name "cublaslt batched relu bias epilogue"
+    :name "hipblaslt batched relu bias epilogue"
 )
 
 ; Canonical tanh-approx GELU can also appear directly as:
 ;
 ;   x * sigmoid(1.5957691216 * x * (1 + 0.044715 * x * x))
 ;
-; Match that sigmoid form and fuse it into the cuBLASLt GELU epilogues.
+; Match that sigmoid form and fuse it into the hipBLASLt GELU epilogues.
 
 (rule
     (
-        (= ?matmul (Op (cublaslt
+        (= ?matmul (Op (hipblaslt
             ?m ?n ?k
             ?a_layout ?b_layout
             ?a_order ?b_order ?c_order ?d_order
@@ -364,7 +364,7 @@
         (= ?gelu_out (Op (Mul ?gelu_out_shape ?gelu_out_a_stride ?gelu_out_b_stride ?gelu_out_out_stride) (ICons ?matmul (ICons ?gelu_sigmoid (INil)))))
     )
     (
-        (let ?fused (Op (cublaslt
+        (let ?fused (Op (hipblaslt
             ?m ?n ?k
             ?a_layout ?b_layout
             ?a_order ?b_order ?c_order ?d_order
@@ -379,12 +379,12 @@
         (set (dtype ?fused) (F32))
     )
     :ruleset matmul_backend
-    :name "cublaslt gelu epilogue"
+    :name "hipblaslt gelu epilogue"
 )
 
 (rule
     (
-        (= ?matmul (Op (cublaslt
+        (= ?matmul (Op (hipblaslt
             ?m ?n ?k
             ?a_layout ?b_layout
             ?a_order ?b_order ?c_order ?d_order
@@ -414,7 +414,7 @@
         (= ?gelu_out (Op (Mul ?gelu_out_shape ?gelu_out_a_stride ?gelu_out_b_stride ?gelu_out_out_stride) (ICons ?matmul (ICons ?gelu_sigmoid (INil)))))
     )
     (
-        (let ?fused (Op (cublaslt
+        (let ?fused (Op (hipblaslt
             ?m ?n ?k
             ?a_layout ?b_layout
             ?a_order ?b_order ?c_order ?d_order
@@ -429,17 +429,17 @@
         (set (dtype ?fused) (F32))
     )
     :ruleset matmul_backend
-    :name "cublaslt gelu bias epilogue"
+    :name "hipblaslt gelu bias epilogue"
 )
 
-; This first slice fuses column-bias adds into CUBLASLT_EPILOGUE_BIAS for the
+; This first slice fuses column-bias adds into HIPBLASLT_EPILOGUE_BIAS for the
 ; older COL-ordered output view. In that view Luminal's logical [m,n] output is
-; represented as a cuBLASLt [n,m] matrix, so cuBLASLt's row-broadcast bias maps
+; represented as a hipBLASLt [n,m] matrix, so hipBLASLt's row-broadcast bias maps
 ; to the common logical column bias of length n.
 
 (rule
     (
-        (= ?matmul (Op (cublaslt
+        (= ?matmul (Op (hipblaslt
             ?m ?n ?k
             ?a_layout ?b_layout
             ?a_order ?b_order ?c_order "COL"
@@ -463,7 +463,7 @@
         (= ?d_dtype (dtype ?bias))
     )
     (
-        (let ?fused (Op (cublaslt
+        (let ?fused (Op (hipblaslt
             ?m ?n ?k
             ?a_layout ?b_layout
             ?a_order ?b_order ?c_order "COL"
@@ -478,12 +478,12 @@
         (set (dtype ?fused) ?d_dtype)
     )
     :ruleset matmul_backend
-    :name "cublaslt 2d matmul plus column bias epilogue"
+    :name "hipblaslt 2d matmul plus column bias epilogue"
 )
 
 (rule
     (
-        (= ?matmul (Op (cublaslt
+        (= ?matmul (Op (hipblaslt
             ?m ?n ?k
             ?a_layout ?b_layout
             ?a_order ?b_order ?c_order "COL"
@@ -507,7 +507,7 @@
         (= ?d_dtype (dtype ?bias))
     )
     (
-        (let ?fused (Op (cublaslt
+        (let ?fused (Op (hipblaslt
             ?m ?n ?k
             ?a_layout ?b_layout
             ?a_order ?b_order ?c_order "COL"
@@ -522,12 +522,12 @@
         (set (dtype ?fused) ?d_dtype)
     )
     :ruleset matmul_backend
-    :name "cublaslt 2d column bias plus matmul epilogue"
+    :name "hipblaslt 2d column bias plus matmul epilogue"
 )
 
 (rule
     (
-        (= ?matmul (Op (cublaslt
+        (= ?matmul (Op (hipblaslt
             ?m ?n ?k
             ?a_layout ?b_layout
             ?a_order ?b_order ?c_order "COL"
@@ -551,7 +551,7 @@
         (= ?d_dtype (dtype ?bias))
     )
     (
-        (let ?fused (Op (cublaslt
+        (let ?fused (Op (hipblaslt
             ?m ?n ?k
             ?a_layout ?b_layout
             ?a_order ?b_order ?c_order "COL"
@@ -566,12 +566,12 @@
         (set (dtype ?fused) ?d_dtype)
     )
     :ruleset matmul_backend
-    :name "cublaslt batched matmul plus column bias epilogue"
+    :name "hipblaslt batched matmul plus column bias epilogue"
 )
 
 (rule
     (
-        (= ?matmul (Op (cublaslt
+        (= ?matmul (Op (hipblaslt
             ?m ?n ?k
             ?a_layout ?b_layout
             ?a_order ?b_order ?c_order "COL"
@@ -595,7 +595,7 @@
         (= ?d_dtype (dtype ?bias))
     )
     (
-        (let ?fused (Op (cublaslt
+        (let ?fused (Op (hipblaslt
             ?m ?n ?k
             ?a_layout ?b_layout
             ?a_order ?b_order ?c_order "COL"
@@ -610,5 +610,5 @@
         (set (dtype ?fused) ?d_dtype)
     )
     :ruleset matmul_backend
-    :name "cublaslt batched column bias plus matmul epilogue"
+    :name "hipblaslt batched column bias plus matmul epilogue"
 )

@@ -13,7 +13,7 @@ pub mod elementwise;
 pub mod markers;
 pub mod region_codegen;
 
-pub use elementwise::{CudaBinaryElementwise, CudaUnaryElementwise};
+pub use elementwise::{RocmBinaryElementwise, RocmUnaryElementwise};
 pub use markers::{FusionEnd, FusionStart};
 
 /// All fusion-related op types that the egglog runtime needs to know about

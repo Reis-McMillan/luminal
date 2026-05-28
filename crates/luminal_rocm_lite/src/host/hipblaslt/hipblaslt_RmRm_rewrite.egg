@@ -7,8 +7,8 @@
 ;   Row-major B[k,n] ≡ column-major [n,k] with ldb=n
 ;   Row-major C[m,n] ≡ column-major [n,m] with ldc=n
 ;
-; cuBLAS computes: C_col[n,m] = B_col[n,k] × A_col[k,m]
-; cublasSgemm(OP_N, OP_N, n, m, k, α, B, n, A, k, β, C, n)
+; rocBLAS computes: C_col[n,m] = B_col[n,k] × A_col[k,m]
+; rocblasSgemm(OP_N, OP_N, n, m, k, α, B, n, A, k, β, C, n)
 (rule
     (
         ; Match Mul node
@@ -42,14 +42,14 @@
 
         (= ?dt (dtype ?a))
         (= ?dt (dtype ?b))
-        (cublaslt_base_dtype ?dt)
+        (hipblaslt_base_dtype ?dt)
     )
     (
-        ; For row-major C = A × B with cuBLAS (column-major):
-        ; cublasSgemm(OP_N, OP_N, n, m, k, α, B, n, A, k, β, C, n)
-        (let ?sgemm (Op (cublaslt
-            ?n             ; cuBLAS m = our n (swapped)
-            ?m             ; cuBLAS n = our m (swapped)
+        ; For row-major C = A × B with rocBLAS (column-major):
+        ; rocblasSgemm(OP_N, OP_N, n, m, k, α, B, n, A, k, β, C, n)
+        (let ?sgemm (Op (hipblaslt
+            ?n             ; rocBLAS m = our n (swapped)
+            ?m             ; rocBLAS n = our m (swapped)
             ?k             ; k unchanged
             "N"            ; transa = No transpose
             "N"            ; transb = No transpose
@@ -69,7 +69,7 @@
         (set (dtype ?sgemm) ?dt)
     )
     :ruleset matmul_backend
-    :name "cublaslt row-major x row-major"
+    :name "hipblaslt row-major x row-major"
 )
 
 ; Batched Row-major × Row-major: C[batch,m,n] = A[batch,m,k] × B[batch,k,n]
@@ -121,22 +121,22 @@
 
         (= ?dt (dtype ?a))
         (= ?dt (dtype ?b))
-        (cublaslt_base_dtype ?dt)
+        (hipblaslt_base_dtype ?dt)
     )
     (
-        ; cuBLAS swap: C^T[n,m] = B^T[n,k] × A^T[k,m] per batch
-        ; cublas(OP_N, OP_N, n, m, k, B, lda=b_k_stride, A, ldb=a_m_stride, C, ldc=n)
-        (let ?sgemm (Op (cublaslt
+        ; rocBLAS swap: C^T[n,m] = B^T[n,k] × A^T[k,m] per batch
+        ; rocblas(OP_N, OP_N, n, m, k, B, lda=b_k_stride, A, ldb=a_m_stride, C, ldc=n)
+        (let ?sgemm (Op (hipblaslt
             ?n ?m ?k
             "N" "N"
             "COL" "COL" "COL" "COL"
-            ?b_k_stride       ; lda (cuBLAS A = our B, row stride)
-            ?a_m_stride       ; ldb (cuBLAS B = our A, row stride)
+            ?b_k_stride       ; lda (rocBLAS A = our B, row stride)
+            ?a_m_stride       ; ldb (rocBLAS B = our A, row stride)
             ?n                ; ldc (contiguous output per batch)
             ?n                ; ldd
             ?batch            ; batch_count
-            ?b_batch_stride   ; stride_a (cuBLAS A = our B)
-            ?a_batch_stride   ; stride_b (cuBLAS B = our A)
+            ?b_batch_stride   ; stride_a (rocBLAS A = our B)
+            ?a_batch_stride   ; stride_b (rocBLAS B = our A)
             (MMul ?m ?n)      ; stride_c
             (MMul ?m ?n)      ; stride_d
             ?dt ?dt ?dt ?dt "default" "default" 1.0 0.0 "DEFAULT")
@@ -145,5 +145,5 @@
         (set (dtype ?sgemm) ?dt)
     )
     :ruleset matmul_backend
-    :name "cublaslt batched row-major × row-major"
+    :name "hipblaslt batched row-major × row-major"
 )

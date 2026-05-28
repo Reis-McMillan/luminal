@@ -78,9 +78,9 @@ fn annotation_matches_id(
 }
 
 /// Record CUDA graph kernel timings as nested slices in perfetto trace
-pub fn record_cuda_graph_timings(
+pub fn record_rocm_graph_timings(
     trace: &schema::Trace,
-    cuda_graph_timings: &[(CudaGraphTiming, Uuid)],
+    rocm_graph_timings: &[(RocmGraphTiming, Uuid)],
 ) -> Vec<schema::TracePacket> {
     use luminal_tracing::schema::{trace_packet, track_descriptor};
 
@@ -88,7 +88,7 @@ pub fn record_cuda_graph_timings(
     let interned = build_interned_strings(trace);
 
     let mut packets = Vec::new();
-    for (graph_timing, id) in cuda_graph_timings {
+    for (graph_timing, id) in rocm_graph_timings {
         let parent_info = trace.packet.iter().find_map(|p| {
             let seq_id = match &p.optional_trusted_packet_sequence_id {
                 Some(trace_packet::OptionalTrustedPacketSequenceId::TrustedPacketSequenceId(
@@ -296,4 +296,4 @@ luminal::impl_into_ops!(KernelOp);
 
 // Kernel to host op compilation
 mod to_host;
-pub use to_host::{CudaGraphOp, kernel_to_host};
+pub use to_host::{RocmGraphOp, kernel_to_host};

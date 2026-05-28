@@ -28,7 +28,7 @@ colorize = "*"
 rocmrc = {path="../../../rocmrc", features=["rocblas", "hipblaslt", "rocm-07021"]}
 
 [dev-dependencies]
-candle-core = { version = "0.9.2", features = ["cuda"] }
+candle-core = "0.9.2"
 luminal_nn = { path = "../luminal_nn" }
 proptest = "1.9.0"
 rand = "0.9.2"

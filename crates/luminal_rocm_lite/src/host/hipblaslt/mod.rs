@@ -33,7 +33,7 @@ use crate::{
                 hipblasLtMatrixLayoutSetAttribute, hipblasLtOrder_t, hipblasOperation_t,
             },
         },
-        driver::{HipStream, DevicePtr},
+        driver::HipStream,
     },
     host::{DeviceBuffer, HostOp},
     try_create_hipblaslt,
@@ -41,7 +41,7 @@ use crate::{
 
 #[derive(Debug)]
 #[allow(dead_code)]
-pub struct hipblasLt {
+pub struct HipblasLt {
     m: Expression,
     n: Expression,
     k: Expression,
@@ -71,11 +71,11 @@ pub struct hipblasLt {
     epilogue: hipblasLtEpilogue_t,
     a_scale_input: bool,
     b_scale_input: bool,
-    hipblasLt: OnceLock<Arc<HipBlasLt>>,
+    hipblas_lt: OnceLock<Arc<HipBlasLt>>,
 }
 
 // Useless default for IntoEgglogOp
-impl Default for hipblasLt {
+impl Default for HipblasLt {
     fn default() -> Self {
         Self {
             m: Expression::default(),
@@ -107,15 +107,16 @@ impl Default for hipblasLt {
             epilogue: hipblasLtEpilogue_t::HIPBLASLT_EPILOGUE_DEFAULT,
             a_scale_input: false,
             b_scale_input: false,
-            hipblasLt: OnceLock::new(),
+            hipblas_lt: OnceLock::new(),
         }
     }
 }
 
 #[derive(Debug, Default)]
-pub struct hipblasLtScaled;
+#[allow(dead_code)]
+pub struct HipblasLtScaled;
 
-fn hipblasLt_sort(name: &'static str) -> SortDef {
+fn hipblaslt_sort(name: &'static str) -> SortDef {
     sort(
         OP_KIND,
         name,
@@ -151,9 +152,9 @@ fn hipblasLt_sort(name: &'static str) -> SortDef {
     )
 }
 
-impl EgglogOp for hipblasLt {
+impl EgglogOp for HipblasLt {
     fn sort(&self) -> SortDef {
-        hipblasLt_sort("hipblasLt")
+        hipblaslt_sort("hipblaslt")
     }
 
     fn n_inputs(&self) -> usize {
@@ -256,10 +257,10 @@ impl EgglogOp for hipblasLt {
         let b_layout_str = &egraph.enodes[kind_children[4]].0;
         let a_layout = parse_hipblaslt_op(a_layout_str);
         let b_layout = parse_hipblaslt_op(b_layout_str);
-        let a_order = parse_hipblasLt_order(&egraph.enodes[kind_children[5]].0);
-        let b_order = parse_hipblasLt_order(&egraph.enodes[kind_children[6]].0);
-        let c_order = parse_hipblasLt_order(&egraph.enodes[kind_children[7]].0);
-        let d_order = parse_hipblasLt_order(&egraph.enodes[kind_children[8]].0);
+        let a_order = parse_hipblaslt_order(&egraph.enodes[kind_children[5]].0);
+        let b_order = parse_hipblaslt_order(&egraph.enodes[kind_children[6]].0);
+        let c_order = parse_hipblaslt_order(&egraph.enodes[kind_children[7]].0);
+        let d_order = parse_hipblaslt_order(&egraph.enodes[kind_children[8]].0);
 
         // Extract leading dimensions from egglog
         let lda = extract_expr(egraph, kind_children[9], expr_cache).unwrap();
@@ -284,11 +285,11 @@ impl EgglogOp for hipblasLt {
         let d_dtype = extract_dtype(egraph, kind_children[21]);
         let compute_type_str = &egraph.enodes[kind_children[22]].0;
         let scale_dtype_str = &egraph.enodes[kind_children[23]].0;
-        let compute_type = parse_hipblasLt_compute_type(compute_type_str, a_dtype);
-        let scale_dtype = parse_hipblasLt_scale_dtype(scale_dtype_str, a_dtype);
-        let alpha = parse_hipblasLt_scalar(&egraph.enodes[kind_children[24]].0);
-        let beta = parse_hipblasLt_scalar(&egraph.enodes[kind_children[25]].0);
-        let epilogue = parse_hipblasLt_epilogue(&egraph.enodes[kind_children[26]].0);
+        let compute_type = parse_hipblaslt_compute_type(compute_type_str, a_dtype);
+        let scale_dtype = parse_hipblaslt_scale_dtype(scale_dtype_str, a_dtype);
+        let alpha = parse_hipblaslt_scalar(&egraph.enodes[kind_children[24]].0);
+        let beta = parse_hipblaslt_scalar(&egraph.enodes[kind_children[25]].0);
+        let epilogue = parse_hipblaslt_epilogue(&egraph.enodes[kind_children[26]].0);
 
         let extracted_state = Self {
             m,
@@ -320,7 +321,7 @@ impl EgglogOp for hipblasLt {
             epilogue,
             a_scale_input: false,
             b_scale_input: false,
-            hipblasLt: OnceLock::new(),
+            hipblas_lt: OnceLock::new(),
         };
         trace!(?extracted_state);
 
@@ -334,9 +335,9 @@ impl EgglogOp for hipblasLt {
     }
 }
 
-impl EgglogOp for hipblasLtScaled {
+impl EgglogOp for HipblasLtScaled {
     fn sort(&self) -> SortDef {
-        hipblasLt_sort("hipblasLt_scaled")
+        hipblaslt_sort("hipblaslt_scaled")
     }
 
     fn n_inputs(&self) -> usize {
@@ -358,10 +359,10 @@ impl EgglogOp for hipblasLtScaled {
 
         let a_layout = parse_hipblaslt_op(&egraph.enodes[kind_children[3]].0);
         let b_layout = parse_hipblaslt_op(&egraph.enodes[kind_children[4]].0);
-        let a_order = parse_hipblasLt_order(&egraph.enodes[kind_children[5]].0);
-        let b_order = parse_hipblasLt_order(&egraph.enodes[kind_children[6]].0);
-        let c_order = parse_hipblasLt_order(&egraph.enodes[kind_children[7]].0);
-        let d_order = parse_hipblasLt_order(&egraph.enodes[kind_children[8]].0);
+        let a_order = parse_hipblaslt_order(&egraph.enodes[kind_children[5]].0);
+        let b_order = parse_hipblaslt_order(&egraph.enodes[kind_children[6]].0);
+        let c_order = parse_hipblaslt_order(&egraph.enodes[kind_children[7]].0);
+        let d_order = parse_hipblaslt_order(&egraph.enodes[kind_children[8]].0);
 
         let lda = extract_expr(egraph, kind_children[9], expr_cache).unwrap();
         let ldb = extract_expr(egraph, kind_children[10], expr_cache).unwrap();
@@ -380,13 +381,13 @@ impl EgglogOp for hipblasLtScaled {
         let d_dtype = extract_dtype(egraph, kind_children[21]);
         let compute_type_str = &egraph.enodes[kind_children[22]].0;
         let scale_dtype_str = &egraph.enodes[kind_children[23]].0;
-        let compute_type = parse_hipblasLt_compute_type(compute_type_str, a_dtype);
-        let scale_dtype = parse_hipblasLt_scale_dtype(scale_dtype_str, a_dtype);
-        let alpha = parse_hipblasLt_scalar(&egraph.enodes[kind_children[24]].0);
-        let beta = parse_hipblasLt_scalar(&egraph.enodes[kind_children[25]].0);
-        let epilogue = parse_hipblasLt_epilogue(&egraph.enodes[kind_children[26]].0);
+        let compute_type = parse_hipblaslt_compute_type(compute_type_str, a_dtype);
+        let scale_dtype = parse_hipblaslt_scale_dtype(scale_dtype_str, a_dtype);
+        let alpha = parse_hipblaslt_scalar(&egraph.enodes[kind_children[24]].0);
+        let beta = parse_hipblaslt_scalar(&egraph.enodes[kind_children[25]].0);
+        let epilogue = parse_hipblaslt_epilogue(&egraph.enodes[kind_children[26]].0);
 
-        let extracted_state = hipblasLt {
+        let extracted_state = HipblasLt {
             m,
             n,
             k,
@@ -416,7 +417,7 @@ impl EgglogOp for hipblasLtScaled {
             epilogue,
             a_scale_input: true,
             b_scale_input: true,
-            hipblasLt: OnceLock::new(),
+            hipblas_lt: OnceLock::new(),
         };
         trace!(?extracted_state);
 
@@ -467,7 +468,7 @@ fn default_compute_and_scale_dtype(dtype: DType) -> (hipblasComputeType_t, DType
     }
 }
 
-fn parse_hipblasLt_compute_type(s: &str, default_dtype: DType) -> hipblasComputeType_t {
+fn parse_hipblaslt_compute_type(s: &str, default_dtype: DType) -> hipblasComputeType_t {
     let stripped = s.trim_matches('"');
     match stripped {
         "default" => default_compute_and_scale_dtype(default_dtype).0,
@@ -479,7 +480,7 @@ fn parse_hipblasLt_compute_type(s: &str, default_dtype: DType) -> hipblasCompute
     }
 }
 
-fn parse_hipblasLt_scale_dtype(s: &str, default_dtype: DType) -> DType {
+fn parse_hipblaslt_scale_dtype(s: &str, default_dtype: DType) -> DType {
     let stripped = s.trim_matches('"');
     match stripped {
         "default" => default_compute_and_scale_dtype(default_dtype).1,
@@ -494,14 +495,14 @@ fn parse_hipblasLt_scale_dtype(s: &str, default_dtype: DType) -> DType {
     }
 }
 
-fn parse_hipblasLt_scalar(s: &str) -> f64 {
+fn parse_hipblaslt_scalar(s: &str) -> f64 {
     let stripped = s.trim_matches('"');
     stripped.parse::<f64>().unwrap_or_else(|_| {
         panic!("Unknown hipblasLt scalar literal: '{stripped}' (original: '{s}')")
     })
 }
 
-fn parse_hipblasLt_order(s: &str) -> hipblasLtOrder_t {
+fn parse_hipblaslt_order(s: &str) -> hipblasLtOrder_t {
     let stripped = s.trim_matches('"');
     match stripped {
         "COL" => hipblasLtOrder_t::HIPBLASLT_ORDER_COL,
@@ -525,7 +526,7 @@ fn parse_hipblaslt_op(s: &str) -> hipblasOperation_t {
     }
 }
 
-fn parse_hipblasLt_epilogue(s: &str) -> hipblasLtEpilogue_t {
+fn parse_hipblaslt_epilogue(s: &str) -> hipblasLtEpilogue_t {
     let stripped = s.trim_matches('"');
     match stripped {
         "DEFAULT" => hipblasLtEpilogue_t::HIPBLASLT_EPILOGUE_DEFAULT,
@@ -555,7 +556,7 @@ fn order_name(order: hipblasLtOrder_t) -> &'static str {
         hipblasLtOrder_t::HIPBLASLT_ORDER_COL => "COL",
         hipblasLtOrder_t::HIPBLASLT_ORDER_ROW => "ROW",
         // rocm-07021 adds COL16_4R16/8/4/2; we never produce those in
-        // parse_hipblasLt_order, but the match must be exhaustive.
+        // parse_hipblaslt_order, but the match must be exhaustive.
         _ => "other",
     }
 }
@@ -797,9 +798,9 @@ fn set_scalar_scale_pointer(
     Ok(())
 }
 
-fn run_hipblasLt_matmul(
+fn run_hipblaslt_matmul(
     stream: &Arc<HipStream>,
-    hipblasLt: &Arc<HipBlasLt>,
+    hipblas_lt: &Arc<HipBlasLt>,
     spec: &LtMatmulSpec,
     ptrs: LtMatmulPointers,
 ) -> anyhow::Result<()> {
@@ -816,7 +817,7 @@ fn run_hipblasLt_matmul(
     let mut heuristic: hipblasLtMatmulHeuristicResult_t = unsafe { std::mem::zeroed() };
     let mut algo_count: i32 = 0;
 
-    let workspace = unsafe { stream.alloc::<u8>(spec.workspace_size)? };
+    let workspace = stream.alloc::<u8>(spec.workspace_size)?;
     let (workspace_ptr, _workspace_guard) = workspace.device_ptr(stream);
 
     let a_scale = if rocm_dtype_needs_tensorwide_scale(spec.a.dtype) && ptrs.a_scale.is_none() {
@@ -964,7 +965,7 @@ fn run_hipblasLt_matmul(
         .result()?;
 
         hipblasLtMatmulAlgoGetHeuristic(
-            hipblasLt.handle(),
+            hipblas_lt.handle(),
             resources.matmul_desc,
             resources.a_desc,
             resources.b_desc,
@@ -984,7 +985,7 @@ fn run_hipblasLt_matmul(
         let alpha_ptr = spec.compute.alpha.as_ptr();
         let beta_ptr = spec.compute.beta.as_ptr();
         hipblasLtMatmul(
-            hipblasLt.handle(),
+            hipblas_lt.handle(),
             resources.matmul_desc,
             alpha_ptr,
             ptrs.a as *const std::ffi::c_void,
@@ -1007,7 +1008,7 @@ fn run_hipblasLt_matmul(
     Ok(())
 }
 
-fn resolve_hipblasLt_pointers(
+fn resolve_hipblaslt_pointers(
     self_node: NodeIndex,
     inputs: &[NodeIndex],
     buffers: &FxHashMap<NodeIndex, DeviceBuffer>,
@@ -1115,15 +1116,15 @@ fn epilogue_uses_bias(epilogue: hipblasLtEpilogue_t) -> bool {
     )
 }
 
-impl hipblasLt {
-    fn get_hipblasLt(&self, stream: &Arc<HipStream>) -> anyhow::Result<Arc<HipBlasLt>> {
-        if let Some(hipblasLt) = self.hipblasLt.get() {
-            return Ok(hipblasLt.clone());
+impl HipblasLt {
+    fn get_hipblaslt(&self, stream: &Arc<HipStream>) -> anyhow::Result<Arc<HipBlasLt>> {
+        if let Some(hipblas_lt) = self.hipblas_lt.get() {
+            return Ok(hipblas_lt.clone());
         }
         let created = try_create_hipblaslt(stream.clone()).map_err(|message| {
             anyhow::anyhow!("hipblasLt unavailable on this machine: {message}")
         })?;
-        let _ = self.hipblasLt.set(created.clone());
+        let _ = self.hipblas_lt.set(created.clone());
         Ok(created)
     }
 
@@ -1181,7 +1182,7 @@ impl hipblasLt {
     }
 }
 
-impl HostOp for hipblasLt {
+impl HostOp for HipblasLt {
     fn execute(
         &self,
         stream: &Arc<HipStream>,
@@ -1223,7 +1224,7 @@ impl HostOp for hipblasLt {
         let alpha = LtScalar::from_f64(self.scale_dtype, self.alpha)?;
         let beta = LtScalar::from_f64(self.scale_dtype, self.beta)?;
 
-        let ptrs = resolve_hipblasLt_pointers(
+        let ptrs = resolve_hipblaslt_pointers(
             self_node,
             inputs,
             buffers,
@@ -1250,7 +1251,7 @@ impl HostOp for hipblasLt {
 
         let _span = span!(
             Level::TRACE,
-            "hipblasLt",
+            "hipblaslt",
             m, n, k, lda, ldb, ldc, ldd, batch_count, ?a_layout, ?b_layout,
             ?self.a_order, ?self.b_order, ?self.c_order, ?self.d_order,
             ?self.a_dtype, ?self.b_dtype, ?self.c_dtype, ?self.d_dtype,
@@ -1259,7 +1260,7 @@ impl HostOp for hipblasLt {
         )
         .entered();
 
-        let hipblasLt = self.get_hipblasLt(stream)?;
+        let hipblas_lt = self.get_hipblaslt(stream)?;
 
         // Allocate workspace (32 MiB)
         const WORKSPACE_SIZE: usize = 32 * 1024 * 1024;
@@ -1316,7 +1317,7 @@ impl HostOp for hipblasLt {
             workspace_size: WORKSPACE_SIZE,
         };
 
-        run_hipblasLt_matmul(stream, &hipblasLt, &spec, ptrs)?;
+        run_hipblaslt_matmul(stream, &hipblas_lt, &spec, ptrs)?;
 
         // No stream.synchronize() here — CUDA stream ordering guarantees
         // sequential execution. The runtime syncs once at the end of execute().
@@ -1400,7 +1401,7 @@ mod tests {
         let b = NodeIndex::new(2);
         let buffers = buffers_for(&[(output, 0xD000), (a, 0xA000), (b, 0xB000)]);
 
-        let ptrs = resolve_hipblasLt_pointers(
+        let ptrs = resolve_hipblaslt_pointers(
             output,
             &[a, b],
             &buffers,
@@ -1426,7 +1427,7 @@ mod tests {
         let extra = NodeIndex::new(3);
         let buffers = buffers_for(&[(output, 0xD000), (a, 0xA000), (b, 0xB000), (extra, 0xEEEE)]);
 
-        let ptrs = resolve_hipblasLt_pointers(
+        let ptrs = resolve_hipblaslt_pointers(
             output,
             &[a, b, extra],
             &buffers,
@@ -1452,7 +1453,7 @@ mod tests {
         let c = NodeIndex::new(3);
         let buffers = buffers_for(&[(output, 0xD000), (a, 0xA000), (b, 0xB000), (c, 0xC000)]);
 
-        let ptrs = resolve_hipblasLt_pointers(
+        let ptrs = resolve_hipblaslt_pointers(
             output,
             &[a, b, c],
             &buffers,
@@ -1478,7 +1479,7 @@ mod tests {
         let bias = NodeIndex::new(3);
         let buffers = buffers_for(&[(output, 0xD000), (a, 0xA000), (b, 0xB000), (bias, 0xB1A5)]);
 
-        let ptrs = resolve_hipblasLt_pointers(
+        let ptrs = resolve_hipblaslt_pointers(
             output,
             &[a, b, bias],
             &buffers,
@@ -1511,7 +1512,7 @@ mod tests {
             (b_scale, 0xB5B5),
         ]);
 
-        let ptrs = resolve_hipblasLt_pointers(
+        let ptrs = resolve_hipblaslt_pointers(
             output,
             &[a, b, a_scale, b_scale],
             &buffers,
@@ -1538,7 +1539,7 @@ mod tests {
         let b = NodeIndex::new(2);
         let buffers = buffers_for(&[(output, 0xD000), (a, 0xA000), (b, 0xB000)]);
 
-        let err = resolve_hipblasLt_pointers(
+        let err = resolve_hipblaslt_pointers(
             output,
             &[a, b],
             &buffers,
@@ -1562,7 +1563,7 @@ mod tests {
         let b = NodeIndex::new(2);
         let buffers = buffers_for(&[(output, 0xD000), (a, 0xA000), (b, 0xB000)]);
 
-        let err = resolve_hipblasLt_pointers(
+        let err = resolve_hipblaslt_pointers(
             output,
             &[a, b],
             &buffers,

@@ -301,16 +301,12 @@ pub(crate) fn compile_module_image_for_current_device<S: AsRef<str>>(
 
 /// Returns the bandwidth of the device in GB/s. Unknown devices return `None`
 /// so callers can skip bandwidth-dependent decisions instead of guessing.
-///
-/// Populate with measured numbers per AMD card as they're brought up. Match on
-/// substrings of the marketing name from `hipDeviceGetName` (e.g. "7900 XTX",
-/// "MI300X").
 pub fn rocm_bandwidth_gbps(ctx: &Arc<HipContext>) -> Option<usize> {
     let name = ctx.name().ok()?;
     Some(match name.as_str() {
-        // TODO: populate measured values; placeholder for RDNA3 7900 XTX
-        // (960 GB/s GDDR6 per AMD spec sheet).
         n if n.contains("7900 XTX") => 960,
+        n if n.contains("7600 XT") => 288,
+        n if n.contains("R9600D") => 640,
         _ => return None,
     })
 }
@@ -320,9 +316,9 @@ pub fn rocm_bandwidth_gbps(ctx: &Arc<HipContext>) -> Option<usize> {
 pub fn rocm_compute_f32_tflops(ctx: &Arc<HipContext>) -> Option<usize> {
     let name = ctx.name().ok()?;
     Some(match name.as_str() {
-        // TODO: populate measured values; placeholder for RDNA3 7900 XTX
-        // (~61 TFLOPs FP32 per AMD spec sheet).
         n if n.contains("7900 XTX") => 61,
+        n if n.contains("7600 XT") => 23,
+        n if n.contains("R9600D") => 25,
         _ => return None,
     })
 }

@@ -5,7 +5,11 @@ use luminal::{op::EgglogOp, prelude::*};
 mod rocblas;
 mod hipblaslt;
 
-pub type Ops = ();
+pub type Ops = (
+    hipblaslt::HipblasLt,
+    hipblaslt::HipblasLtScaled,
+    // moe and flashinfer (cuda_lite siblings) not yet ported to ROCm.
+);
 
 #[cfg(test)]
 pub(crate) type HipblasLtTypeTuple = (

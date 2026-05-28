@@ -161,7 +161,7 @@ pub(crate) fn try_create_hipblaslt(
 fn rocm_hiprtc_compile_options(target_arch: &str) -> Vec<String> {
     let mut options = rocm_hiprtc_include_paths()
         .into_iter()
-        .map(|path| format!("--include-path={path}"))
+        .map(|path| format!("-I{path}"))
         .collect::<Vec<_>>();
     options.push(format!("--offload-arch={target_arch}"));
     options

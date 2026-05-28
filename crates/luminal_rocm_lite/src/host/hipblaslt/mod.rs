@@ -189,7 +189,19 @@ impl EgglogOp for HipblasLt {
             Rule::raw(include_str!["hipblaslt_scale_rewrite.egg"]),
             Rule::raw(include_str!["hipblaslt_beta_rewrite.egg"]),
             Rule::raw(include_str!["hipblaslt_epilogue_rewrite.egg"]),
-            Rule::raw(include_str!["hipblaslt_row_order_rewrite.egg"]),
+            // hipBLASLt's HIPBLASLT_ORDER_ROW support is incomplete — when no
+            // row-major micro-kernel is available, the library fails (or
+            // silently misbehaves) instead of falling back. The col-order
+            // swap-trick rules above (RmRm/RmCm/CmRm/CmCm) cover all four
+            // input layouts by swapping A↔B + inverting transpose flags to
+            // make a column-major kernel produce a row-major result. Force
+            // everything through that path until hipBLASLt's row-major
+            // coverage improves.
+            //
+            // Re-enable with care — also requires inverting bias vector shape
+            // semantics if used with bias epilogues.
+            //
+            // Rule::raw(include_str!["hipblaslt_row_order_rewrite.egg"]),
             // Delete the matmul-broadcast Mul eclass when the consuming Sum
             // eclass has a `hipblasLt` or `KernelBatchMatMul` alternative. The
             // hipblasLt / batched-matmul rewrite rules only union those enodes

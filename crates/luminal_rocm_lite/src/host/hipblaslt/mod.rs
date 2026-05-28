@@ -206,7 +206,7 @@ impl EgglogOp for HipblasLt {
             Rule::raw("(rule
                 ((= ?mul (Op (Mul ?shape ?as ?bs ?os) ?inputs))
                  (= ?sum (Op (Sum ?sshape ?sk ?ssi ?sks ?sso) (ICons ?mul (INil))))
-                 (= ?sum (Op (hipblasLt ?cm ?cn ?ck ?cta ?ctb ?cao ?cbo ?cco ?cdo ?clda ?cldb ?cldc ?cldd ?cbc ?csa ?csb ?csc ?csd ?cadt ?cbdt ?ccdt ?cddt ?ccompute ?cscale ?calpha ?cbeta ?cepilogue) ?ci)))
+                 (= ?sum (Op (hipblaslt ?cm ?cn ?ck ?cta ?ctb ?cao ?cbo ?cco ?cdo ?clda ?cldb ?cldc ?cldd ?cbc ?csa ?csb ?csc ?csd ?cadt ?cbdt ?ccdt ?cddt ?ccompute ?cscale ?calpha ?cbeta ?cepilogue) ?ci)))
                 ((delete (Op (Mul ?shape ?as ?bs ?os) ?inputs)))
                 :ruleset cleanup
             )"),
@@ -224,7 +224,7 @@ impl EgglogOp for HipblasLt {
             Rule::raw("(rule
                 ((= ?mul (Op (FusionEnd ?fshape ?fos ?fdt) ?finputs))
                  (= ?sum (Op (Sum ?sshape ?sk ?ssi ?sks ?sso) (ICons ?mul (INil))))
-                 (= ?sum (Op (hipblasLt ?cm ?cn ?ck ?cta ?ctb ?cao ?cbo ?cco ?cdo ?clda ?cldb ?cldc ?cldd ?cbc ?csa ?csb ?csc ?csd ?cadt ?cbdt ?ccdt ?cddt ?ccompute ?cscale ?calpha ?cbeta ?cepilogue) ?ci)))
+                 (= ?sum (Op (hipblaslt ?cm ?cn ?ck ?cta ?ctb ?cao ?cbo ?cco ?cdo ?clda ?cldb ?cldc ?cldd ?cbc ?csa ?csb ?csc ?csd ?cadt ?cbdt ?ccdt ?cddt ?ccompute ?cscale ?calpha ?cbeta ?cepilogue) ?ci)))
                 ((delete (Op (FusionEnd ?fshape ?fos ?fdt) ?finputs)))
                 :ruleset cleanup
             )"),

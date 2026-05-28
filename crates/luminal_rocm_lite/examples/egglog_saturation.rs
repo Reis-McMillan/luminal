@@ -13,7 +13,7 @@ use luminal::{
     prelude::*,
     shape::Expression,
 };
-use luminal_cuda_lite::runtime::CudaRuntime;
+use luminal_rocm_lite::runtime::RocmRuntime;
 
 const DEFAULT_PASSES: usize = 256;
 const EGGLOG_RULESETS: &[&str] = &[
@@ -38,7 +38,7 @@ const GEMMA_RMS_NORM_EPS: f32 = 1e-6;
 #[derive(Debug, Clone, Copy)]
 enum Backend {
     Native,
-    Cuda,
+    Rocm,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -74,7 +74,7 @@ struct Args {
 
 fn parse_args() -> Args {
     let mut args = Args {
-        backend: Backend::Cuda,
+        backend: Backend::Rocm,
         mode: Mode::Current,
         case: Case::Gelu,
         passes: DEFAULT_PASSES,
@@ -88,8 +88,8 @@ fn parse_args() -> Args {
             "--backend" => {
                 args.backend = match iter.next().as_deref() {
                     Some("native") => Backend::Native,
-                    Some("cuda") => Backend::Cuda,
-                    other => panic!("invalid --backend {other:?}; use native|cuda"),
+                    Some("rocm") => Backend::Rocm,
+                    other => panic!("invalid --backend {other:?}; use native|rocm"),
                 };
             }
             "--mode" => {
@@ -120,7 +120,7 @@ fn parse_args() -> Args {
                     "Usage: egglog_saturation [OPTIONS]\n\
                      \n\
                      Options:\n\
-                       --backend native|cuda          default: cuda\n\
+                       --backend native|rocm          default: rocm\n\
                        --mode current|steps|full-default|full-cycle\n\
                        --case mul|unary-chain:N|gelu|softmax|layer-norm|matmul|attention|qwen-moe|gemma-moe\n\
                        --passes N                    default: 256\n\
@@ -541,10 +541,10 @@ fn run(args: Args) {
 
     let mut ops = match args.backend {
         Backend::Native => <NativeRuntime as Runtime>::Ops::into_vec(),
-        Backend::Cuda => <CudaRuntime as Runtime>::Ops::into_vec(),
+        Backend::Rocm => <RocmRuntime as Runtime>::Ops::into_vec(),
     };
     ops.extend(<HLIROps as IntoEgglogOp>::into_vec());
-    let cleanup = args.cleanup && matches!(args.backend, Backend::Cuda);
+    let cleanup = args.cleanup && matches!(args.backend, Backend::Rocm);
     let setup = setup_program(&program, &ops, cleanup);
 
     println!(

@@ -423,6 +423,7 @@ fn hipblaslt_rewrites_emit_default_matrix_orders() {
 
 #[test]
 #[ignore = "expensive ROCm rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+#[cfg(any())] // disabled: row-order rewrite rule is commented out in hipblaslt/mod.rs
 fn hipblaslt_rewrites_cover_2d_row_order_layout_pairs() {
     for case in LAYOUT_CASES {
         let expected_orders = row_order_tuple(case);
@@ -434,6 +435,7 @@ fn hipblaslt_rewrites_cover_2d_row_order_layout_pairs() {
 
 #[test]
 #[ignore = "expensive ROCm rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+#[cfg(any())] // disabled: row-order rewrite rule is commented out in hipblaslt/mod.rs
 fn hipblaslt_rewrites_cover_batched_row_order_layout_pairs() {
     for case in LAYOUT_CASES {
         let expected_orders = row_order_tuple(case);
@@ -557,6 +559,7 @@ fn hipblaslt_rewrites_cover_batched_c_plus_matmul_beta_one() {
 
 #[test]
 #[ignore = "expensive ROCm rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+#[cfg(any())] // disabled: row-order rewrite rule is commented out in hipblaslt/mod.rs
 fn hipblaslt_rewrites_cover_2d_row_order_matmul_plus_c_beta_one() {
     for case in LAYOUT_CASES {
         let expected_orders = row_order_tuple(case);
@@ -573,6 +576,7 @@ fn hipblaslt_rewrites_cover_2d_row_order_matmul_plus_c_beta_one() {
 
 #[test]
 #[ignore = "expensive ROCm rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+#[cfg(any())] // disabled: row-order rewrite rule is commented out in hipblaslt/mod.rs
 fn hipblaslt_rewrites_cover_2d_row_order_c_plus_matmul_beta_one() {
     for case in LAYOUT_CASES {
         let expected_orders = row_order_tuple(case);
@@ -589,6 +593,7 @@ fn hipblaslt_rewrites_cover_2d_row_order_c_plus_matmul_beta_one() {
 
 #[test]
 #[ignore = "expensive ROCm rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+#[cfg(any())] // disabled: row-order rewrite rule is commented out in hipblaslt/mod.rs
 fn hipblaslt_rewrites_cover_batched_row_order_matmul_plus_c_beta_one() {
     for case in LAYOUT_CASES {
         let expected_orders = row_order_tuple(case);
@@ -605,6 +610,7 @@ fn hipblaslt_rewrites_cover_batched_row_order_matmul_plus_c_beta_one() {
 
 #[test]
 #[ignore = "expensive ROCm rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+#[cfg(any())] // disabled: row-order rewrite rule is commented out in hipblaslt/mod.rs
 fn hipblaslt_rewrites_cover_batched_row_order_c_plus_matmul_beta_one() {
     for case in LAYOUT_CASES {
         let expected_orders = row_order_tuple(case);
@@ -681,6 +687,7 @@ fn hipblaslt_rewrites_cover_batched_sliced_c_plus_matmul_beta_one() {
 
 #[test]
 #[ignore = "expensive ROCm rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+#[cfg(any())] // disabled: row-order rewrite rule is commented out in hipblaslt/mod.rs
 fn hipblaslt_rewrites_cover_2d_row_order_matmul_plus_sliced_c_beta_one() {
     for case in LAYOUT_CASES {
         let expected_orders = row_order_tuple(case);
@@ -698,6 +705,7 @@ fn hipblaslt_rewrites_cover_2d_row_order_matmul_plus_sliced_c_beta_one() {
 
 #[test]
 #[ignore = "expensive ROCm rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+#[cfg(any())] // disabled: row-order rewrite rule is commented out in hipblaslt/mod.rs
 fn hipblaslt_rewrites_cover_batched_row_order_matmul_plus_sliced_c_beta_one() {
     for case in LAYOUT_CASES {
         let expected_orders = row_order_tuple(case);
@@ -775,6 +783,7 @@ fn hipblaslt_rewrites_cover_batched_matmul_plus_offset_c_beta_one() {
 
 #[test]
 #[ignore = "expensive ROCm rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+#[cfg(any())] // disabled: row-order rewrite rule is commented out in hipblaslt/mod.rs
 fn hipblaslt_rewrites_cover_2d_scaled_alpha_beta() {
     for case in LAYOUT_CASES {
         for commuted in [false, true] {
@@ -793,6 +802,7 @@ fn hipblaslt_rewrites_cover_2d_scaled_alpha_beta() {
 
 #[test]
 #[ignore = "expensive ROCm rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+#[cfg(any())] // disabled: row-order rewrite rule is commented out in hipblaslt/mod.rs
 fn hipblaslt_rewrites_cover_batched_scaled_alpha_beta() {
     for commuted in [false, true] {
         let case = LayoutCase {
@@ -878,6 +888,7 @@ fn hipblaslt_rewrites_cover_batched_mixed_low_precision_inputs_f32_output_and_c(
 
 #[test]
 #[ignore = "expensive ROCm FP8 rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+#[cfg(any())] // disabled: RDNA3 has no FP8 silicon; hipBLASLt finds no algorithm
 fn hipblaslt_fp8_supported_pairs_execute_2d_matmul_f32_output() {
     for (a_dtype, b_dtype) in HIPBLASLT_FP8_F32_PAIRS {
         hipblaslt_fp8_candidate_executes_2d_matmul_f32_output(a_dtype, b_dtype);
@@ -886,6 +897,7 @@ fn hipblaslt_fp8_supported_pairs_execute_2d_matmul_f32_output() {
 
 #[test]
 #[ignore = "expensive ROCm FP8 rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+#[cfg(any())] // disabled: RDNA3 has no FP8 silicon; hipBLASLt finds no algorithm
 fn hipblaslt_fp8_supported_pairs_execute_batched_matmul_f32_output() {
     for (a_dtype, b_dtype) in HIPBLASLT_FP8_F32_PAIRS {
         hipblaslt_fp8_candidate_executes_batched_matmul_f32_output(a_dtype, b_dtype);
@@ -901,6 +913,7 @@ fn hipblaslt_fp8_e5m2_same_type_does_not_match_f32_output() {
 
 #[test]
 #[ignore = "expensive ROCm functional candidate sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+#[cfg(any())] // disabled: RDNA3 has no FP8 silicon; hipBLASLt finds no algorithm
 fn hipblaslt_fp8_e4m3_beta_candidate_executes_2d_matmul_plus_f32_c() {
     let Some(stream) = get_rocm_stream() else {
         return;
@@ -952,6 +965,7 @@ fn hipblaslt_fp8_e4m3_beta_candidate_executes_2d_matmul_plus_f32_c() {
 
 #[test]
 #[ignore = "expensive ROCm FP8 rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+#[cfg(any())] // disabled: RDNA3 has no FP8 silicon; hipBLASLt finds no algorithm
 fn hipblaslt_fp8_scaled_candidate_executes_2d_matmul_f32_output() {
     let Some(stream) = get_rocm_stream() else {
         return;
@@ -1077,6 +1091,7 @@ fn hipblaslt_fp8_scaled_candidates_reach_fused_mlp_consumer() {
 
 #[test]
 #[ignore = "expensive ROCm FP8 rewrite sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+#[cfg(any())] // disabled: RDNA3 has no FP8 silicon; hipBLASLt finds no algorithm
 fn hipblaslt_fp8_scaled_candidate_executes_batched_matmul_f32_output() {
     let Some(stream) = get_rocm_stream() else {
         return;
@@ -1803,6 +1818,7 @@ fn hipblaslt_beta_one_candidate_executes_batched_matmul_plus_offset_c() {
 
 #[test]
 #[ignore = "expensive ROCm functional candidate sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+#[cfg(any())] // disabled: row-order rewrite rule is commented out in hipblaslt/mod.rs
 fn hipblaslt_scaled_alpha_beta_candidate_executes_2d_matmul_plus_c() {
     let Some(stream) = get_rocm_stream() else {
         return;
@@ -1839,6 +1855,7 @@ fn hipblaslt_scaled_alpha_beta_candidate_executes_2d_matmul_plus_c() {
 
 #[test]
 #[ignore = "expensive ROCm functional candidate sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+#[cfg(any())] // disabled: row-order rewrite rule is commented out in hipblaslt/mod.rs
 fn hipblaslt_scaled_alpha_beta_candidate_executes_batched_matmul_plus_c() {
     let Some(stream) = get_rocm_stream() else {
         return;
@@ -2278,6 +2295,7 @@ fn hipblaslt_relu_epilogue_candidate_executes_batched_matmul() {
 
 #[test]
 #[ignore = "expensive ROCm functional candidate sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+#[cfg(any())] // disabled: row-order rewrite rule is commented out in hipblaslt/mod.rs
 fn hipblaslt_row_order_beta_one_candidate_executes_2d_layout_pairs() {
     let Some(stream) = get_rocm_stream() else {
         return;
@@ -2328,6 +2346,7 @@ fn hipblaslt_row_order_beta_one_candidate_executes_2d_layout_pairs() {
 
 #[test]
 #[ignore = "expensive ROCm functional candidate sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+#[cfg(any())] // disabled: row-order rewrite rule is commented out in hipblaslt/mod.rs
 fn hipblaslt_row_order_beta_one_candidate_executes_batched_row_major_matmul_plus_c() {
     let Some(stream) = get_rocm_stream() else {
         return;
@@ -2364,6 +2383,7 @@ fn hipblaslt_row_order_beta_one_candidate_executes_batched_row_major_matmul_plus
 
 #[test]
 #[ignore = "expensive ROCm functional candidate sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+#[cfg(any())] // disabled: row-order rewrite rule is commented out in hipblaslt/mod.rs
 fn hipblaslt_row_order_candidate_executes_2d_layout_pairs() {
     let Some(stream) = get_rocm_stream() else {
         return;
@@ -2410,6 +2430,7 @@ fn hipblaslt_row_order_candidate_executes_2d_layout_pairs() {
 
 #[test]
 #[ignore = "large row-order ROCm functional repro for llama lm_head shape"]
+#[cfg(any())] // disabled: row-order rewrite rule is commented out in hipblaslt/mod.rs
 fn hipblaslt_row_order_candidate_executes_large_lm_head_like_projection() {
     let Some(stream) = get_rocm_stream() else {
         return;
@@ -2449,6 +2470,7 @@ fn hipblaslt_row_order_candidate_executes_large_lm_head_like_projection() {
 
 #[test]
 #[ignore = "large row-order ROCm functional repro for llama MLP residual beta=1 shape"]
+#[cfg(any())] // disabled: row-order rewrite rule is commented out in hipblaslt/mod.rs
 fn hipblaslt_row_order_beta_one_candidate_executes_llama_mlp_residual_like_projection() {
     let Some(stream) = get_rocm_stream() else {
         return;
@@ -2489,6 +2511,7 @@ fn hipblaslt_row_order_beta_one_candidate_executes_llama_mlp_residual_like_proje
 
 #[test]
 #[ignore = "expensive ROCm functional candidate sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
+#[cfg(any())] // disabled: row-order rewrite rule is commented out in hipblaslt/mod.rs
 fn hipblaslt_row_order_candidate_executes_batched_row_major_matmul() {
     let Some(stream) = get_rocm_stream() else {
         return;

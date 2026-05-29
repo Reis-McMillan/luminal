@@ -73,7 +73,10 @@ proptest! {
         (m, n, k, a_col_major, b_col_major, m_slice, k_slice, n_slice, dtype) in
             (1usize..128, 1usize..128, 1usize..128, any::<bool>(), any::<bool>(),
              any::<(bool, bool)>(), any::<(bool, bool)>(), any::<(bool, bool)>(),
-             prop::sample::select(&[luminal::dtype::DType::F32, luminal::dtype::DType::F16, luminal::dtype::DType::Bf16]))
+             // Bf16 omitted: candle's CPU backend (our reference oracle) doesn't
+             // implement matmul for Bf16 storage. Re-add if you swap in a
+             // reference that supports Bf16 (or cast to F32 before comparing).
+             prop::sample::select(&[luminal::dtype::DType::F32, luminal::dtype::DType::F16]))
             .prop_perturb(|(m, n, k, a_cm, b_cm, m_sl, k_sl, n_sl, dt), mut rng| {
                 (m, n, k, a_cm, b_cm,
                  gen_slice_range(m, m_sl.0, m_sl.1, &mut rng),

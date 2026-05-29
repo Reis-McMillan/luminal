@@ -31,8 +31,12 @@ fn rocm_dtype(dtype: DType) -> &'static str {
     match dtype {
         DType::F64 => "double",
         DType::F32 => "float",
+        // HIP defines `half` (alias to `_Float16`) via hip/hip_fp16.h.
         DType::F16 => "half",
-        DType::Bf16 => "__nv_bfloat16",
+        // HIP's bfloat16 type — declared in hip/hip_bf16.h. There's no
+        // `__nv_bfloat16` compatibility alias on AMD, so we use the native
+        // name directly.
+        DType::Bf16 => "__hip_bfloat16",
         DType::TF32 => "float", // TF32 uses float storage, tensor cores handle the format
         DType::Int => "int",
         DType::I16 => "short",
@@ -40,12 +44,21 @@ fn rocm_dtype(dtype: DType) -> &'static str {
         DType::I8 => "signed char",
         DType::U8 => "unsigned char",
         DType::Bool => "unsigned char",
-        DType::F8E4M3 => "__nv_fp8_e4m3",
-        DType::F8E5M2 => "__nv_fp8_e5m2",
-        DType::F8UE8M0 => "__nv_fp8_e8m0",
-        DType::F6E2M3 => "__nv_fp6_e2m3",
-        DType::F6E3M2 => "__nv_fp6_e3m2",
-        DType::F4E2M1 => "__nv_fp4_e2m1",
+        // FP8 types — HIP provides `__hip_fp8_e4m3` / `__hip_fp8_e5m2` via
+        // hip/hip_fp8.h on ROCm 6.x+. RDNA3 doesn't have native FP8
+        // hardware so these are emulated via promotion to f32 at runtime;
+        // kernels still need to compile if any FP8-using rewrite path is
+        // exercised.
+        DType::F8E4M3 => "__hip_fp8_e4m3",
+        DType::F8E5M2 => "__hip_fp8_e5m2",
+        // The following sub-byte / non-IEEE formats have no HIP analog yet
+        // (no AMD GPU has native silicon for them). Storage falls back to
+        // raw bytes; if a kernel actually tries to use one, hipRTC will
+        // fail at the unknown-type stage so the bug is visible.
+        DType::F8UE8M0 => "unsigned char",
+        DType::F6E2M3 => "unsigned char",
+        DType::F6E3M2 => "unsigned char",
+        DType::F4E2M1 => "unsigned char",
         DType::I4 | DType::U4 => "unsigned char", // Sub-byte, packed storage
     }
 }

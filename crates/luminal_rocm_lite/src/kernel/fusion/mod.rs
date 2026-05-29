@@ -2,9 +2,9 @@
 //!
 //! - `markers` — `FusionStart` / `FusionEnd` ops + the seven egglog rule
 //!   families that build and extend FE-bracketed regions.
-//! - `elementwise` — generic region-internal CUDA elementwise op variants.
+//! - `elementwise` — generic region-internal HIP elementwise op variants.
 //! - `region_codegen` — `kernel_to_host` calls into here to collapse each
-//!   FE-rooted region into a single CUDA kernel at compile time.
+//!   FE-rooted region into a single HIP kernel at compile time.
 //!
 //! The LLIR keeps `FusionStart` / generic elementwise / `FusionEnd` nodes after
 //! extraction; `region_codegen` is the only place that walks them.

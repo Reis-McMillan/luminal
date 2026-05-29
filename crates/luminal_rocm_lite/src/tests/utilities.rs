@@ -286,7 +286,7 @@ impl<'a> RocmSearchEquivalenceFuzzer<'a> {
     }
 
     pub fn run(self) -> SearchEquivalenceFuzzReport {
-        fuzz_cuda_search_space_equivalence(
+        fuzz_rocm_search_space_equivalence(
             self.cx,
             self.stream,
             &self.inputs,
@@ -296,14 +296,14 @@ impl<'a> RocmSearchEquivalenceFuzzer<'a> {
     }
 }
 
-/// End-to-end search-space equivalence fuzzing for CUDA.
+/// End-to-end search-space equivalence fuzzing for ROCm.
 ///
-/// This builds the normal CUDA e-graph search space, extracts random selectable
+/// This builds the normal ROCm e-graph search space, extracts random selectable
 /// LLIR graphs, runs each with identical inputs, and verifies every requested
 /// f32 output matches the first valid extraction. The reference is intentionally
 /// another selected LLIR graph, not a hand-written CPU implementation: this
 /// catches cases where supposedly equivalent e-graph choices diverge.
-pub fn fuzz_cuda_search_space_equivalence(
+pub fn fuzz_rocm_search_space_equivalence(
     cx: &mut Graph,
     stream: &Arc<rocmrc::HipStream>,
     inputs: &[RocmFuzzInput],
@@ -353,7 +353,7 @@ pub fn fuzz_cuda_search_space_equivalence(
     prev_selected.insert(hash_choice_set(&base));
 
     let mut skipped_invalid = 0usize;
-    let reference_is_cuda = native_reference_outputs.is_none();
+    let reference_is_rocm = native_reference_outputs.is_none();
     let (reference_hash, reference_outputs, mut tested) =
         if let Some(reference_outputs) = native_reference_outputs {
             (0, reference_outputs, 0usize)
@@ -407,7 +407,7 @@ pub fn fuzz_cuda_search_space_equivalence(
                 break;
             }
             let candidate_hash = hash_choice_set(&candidate);
-            if reference_is_cuda && candidate_hash == reference_hash {
+            if reference_is_rocm && candidate_hash == reference_hash {
                 continue;
             }
             if validate_choice_set(egraph, &candidate, ops).is_err() {
@@ -567,9 +567,9 @@ pub fn to_candle_dtype(dtype: luminal::dtype::DType) -> candle_core::DType {
     }
 }
 
-/// Base unary test function with input generator (CUDA version)
+/// Base unary test function with input generator (ROCm version)
 /// Generic over dtype T - comparison happens in native precision.
-pub fn test_unary_cuda<T: TestDType>(
+pub fn test_unary_rocm<T: TestDType>(
     shape: impl ToShape,
     func: impl Fn(GraphTensor) -> GraphTensor,
     ref_func: impl Fn(Tensor) -> Tensor,
@@ -603,7 +603,7 @@ pub fn test_unary_cuda<T: TestDType>(
 
     let result = T::get_from_runtime(&rt, b.id);
 
-    // Reference using candle on CUDA
+    // Reference using candle on CPU
     let device = Device::Cpu;
     let ref_a = Tensor::from_slice(&input_data, shape, &device).unwrap();
     let ref_b = ref_func(ref_a).flatten_all().unwrap();
@@ -631,7 +631,7 @@ pub fn test_unary_cuda<T: TestDType>(
 /// Generic over dtype T - comparison happens in native precision.
 /// Requires explicit rtol and atol tolerances (as f32, converted to T internally).
 #[allow(clippy::too_many_arguments)]
-pub fn test_binary_cuda<T: TestDType>(
+pub fn test_binary_rocm<T: TestDType>(
     a_shape: impl ToShape,
     b_shape: impl ToShape,
     func: impl Fn(GraphTensor, GraphTensor) -> GraphTensor,
@@ -678,7 +678,7 @@ pub fn test_binary_cuda<T: TestDType>(
 
     let result = T::get_from_runtime(&rt, c.id);
 
-    // Reference using candle on CUDA
+    // Reference using candle on CPU
     let device = Device::Cpu;
     let ref_a = Tensor::from_slice(&a_data, a_shape, &device).unwrap();
     let ref_b = Tensor::from_slice(&b_data, b_shape, &device).unwrap();
@@ -746,7 +746,7 @@ pub fn test_mod(
 
     let result = rt.get_f32(c);
 
-    // Reference: Rust's % operator matches CUDA's fmodf (IEEE 754 remainder)
+    // Reference: Rust's % operator matches the underlying GPU fmodf (IEEE 754 remainder)
     let expected: Vec<f32> = a_data
         .iter()
         .zip(b_data.iter())

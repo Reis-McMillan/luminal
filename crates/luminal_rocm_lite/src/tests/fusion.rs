@@ -6,7 +6,7 @@ use crate::kernel::KernelOp;
 use crate::kernel::fusion::{RocmBinaryElementwise, RocmUnaryElementwise};
 use crate::runtime::RocmRuntime;
 use crate::tests::utilities::{
-    TOLERANCE_SAFETY_FACTOR, dtype_epsilon, random_f32_vec, test_binary_cuda, test_unary_cuda,
+    TOLERANCE_SAFETY_FACTOR, dtype_epsilon, random_f32_vec, test_binary_rocm, test_unary_rocm,
 };
 
 #[test]
@@ -76,7 +76,7 @@ fn test_unary_fusion_preserves_output() {
     // silently no-ops otherwise via get_rocm_stream().
     let seed = 0xC0FFEEu64;
     let gen_lambda = |n, s| random_f32_vec(n, s, 0.0, 1.0);
-    test_unary_cuda::<f32>(
+    test_unary_rocm::<f32>(
         8,
         |a| a.sin().sqrt(),
         |a| a.sin().unwrap().sqrt().unwrap(),
@@ -128,7 +128,7 @@ fn test_three_unary_chain_preserves_output() {
     // a 3-link chain. The structural tests above cover the distinct-ops shape.
     let seed = 0xBEEFu64;
     let gen_lambda = |n, s| random_f32_vec(n, s, 0.0, 1.0);
-    test_unary_cuda::<f32>(
+    test_unary_rocm::<f32>(
         16,
         |a| a.sin().sqrt().sin(),
         |a| a.sin().unwrap().sqrt().unwrap().sin().unwrap(),
@@ -618,11 +618,11 @@ fn test_stride_mismatch_blocks_binary_fusion() {
 #[test]
 fn test_simple_binary_fusion_preserves_output() {
     // End-to-end numerical check: `a + b` on GPU matches candle's add across
-    // all reachable genomes (fused or unfused) via test_binary_cuda's fuzzer.
+    // all reachable genomes (fused or unfused) via test_binary_rocm's fuzzer.
     let seed = 0xADDBEEFu64;
     let eps = dtype_epsilon(luminal::dtype::DType::F32);
     let tol = eps * TOLERANCE_SAFETY_FACTOR;
-    test_binary_cuda::<f32>(
+    test_binary_rocm::<f32>(
         16,
         16,
         |a, b| a + b,
@@ -645,7 +645,7 @@ fn test_diamond_dag_preserves_output() {
     // Five-op chain with exp + sin: allow ~5x safety to absorb accumulated
     // rounding vs candle's kernels.
     let tol = eps * TOLERANCE_SAFETY_FACTOR * 5.0;
-    test_binary_cuda::<f32>(
+    test_binary_rocm::<f32>(
         16,
         16,
         |a, b| {

@@ -17,7 +17,7 @@ use luminal::{
     prelude::*,
 };
 
-/// Generates CUDA include directives based on the dtypes used in a kernel
+/// Generates HIP include directives based on the dtypes used in a kernel
 pub fn dtype_includes(dtypes: &[DType]) -> String {
     let needs_fp16 = dtypes.iter().any(|d| matches!(d, DType::F16));
     let needs_bf16 = dtypes.iter().any(|d| matches!(d, DType::Bf16));
@@ -39,10 +39,10 @@ pub fn dtype_includes(dtypes: &[DType]) -> String {
         s.push_str("#include <hip/hip_fp8.h>\n");
     }
     if needs_fp6 {
-        s.push_str("#include <cuda_fp6.h>\n");
+        s.push_str("#include <hip/hip_fp6.h>\n");
     }
     if needs_fp4 {
-        s.push_str("#include <cuda_fp4.h>\n");
+        s.push_str("#include <hip/hip_fp4.h>\n");
     }
     s
 }
@@ -745,7 +745,7 @@ extern \"C\" {{
 }
 
 // KernelScatter: inverse of gather - out = copy(dest); out[indexes[i]] = src[i]
-// Two-phase: memcpy graph node copies dest→output, then scatter kernel runs in same CUDA graph.
+// Two-phase: memcpy graph node copies dest→output, then scatter kernel runs in same HIP graph.
 #[derive(Debug, Clone)]
 pub struct KernelScatter {
     dest_shape: Vec<Expression>,
@@ -1764,7 +1764,7 @@ impl KernelOp for KernelCast {
             // Sub-byte packed types: multiple values packed per byte.
             // Extract the correct bits using bit-level addressing.
             let bits = self.in_dtype.bits();
-            let in_cuda_type = rocm_dtype(self.in_dtype);
+            let in_hip_type = rocm_dtype(self.in_dtype);
             let mask = (1u32 << bits) - 1;
             format!(
                 "{includes}
@@ -1778,7 +1778,7 @@ extern \"C\" {{
         int bit_pos = (int)(bit_offset & 7);
         unsigned short raw = (unsigned short)in_raw[byte_idx];
         if (bit_pos + {bits} > 8) raw |= ((unsigned short)in_raw[byte_idx + 1]) << 8;
-        {in_cuda_type} val;
+        {in_hip_type} val;
         val.__x = (unsigned char)((raw >> bit_pos) & {mask}u);
         out[idx] = ({out_dtype})val;
     }}

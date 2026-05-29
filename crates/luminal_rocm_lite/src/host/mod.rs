@@ -122,12 +122,12 @@ impl DeviceBuffer {
 
 /// Host operations that execute on the CPU but orchestrate GPU work.
 ///
-/// This includes operations like cuBLAS calls and CUDA graph executions.
+/// This includes operations like cuBLAS calls and HIP graph executions.
 pub trait HostOp: Debug + as_any::AsAny + EgglogOp {
     /// Execute the operation with access to buffers via a map.
     ///
     /// # Arguments
-    /// * `stream` - The CUDA stream to execute on
+    /// * `stream` - The HIP stream to execute on
     /// * `self_node` - The NodeIndex of this op in the llir_graph (used as output buffer)
     /// * `inputs` - NodeIndices of input nodes (in edge order from the graph)
     /// * `buffers` - Map from NodeIndex to device buffer for all allocated nodes

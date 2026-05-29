@@ -77,7 +77,7 @@ fn annotation_matches_id(
     }
 }
 
-/// Record CUDA graph kernel timings as nested slices in perfetto trace
+/// Record HIP graph kernel timings as nested slices in perfetto trace
 pub fn record_rocm_graph_timings(
     trace: &schema::Trace,
     rocm_graph_timings: &[(RocmGraphTiming, Uuid)],
@@ -118,7 +118,7 @@ pub fn record_rocm_graph_timings(
         // Use span_start_time + setup_duration + launch_latency as the base for kernel timings.
         // - setup_duration_ns: time spent on host between span entry and launch call
         // - launch_latency_ns: GPU-side time from launch to first kernel execution
-        // This ensures kernel spans are accurately positioned within the cuda_graph span.
+        // This ensures kernel spans are accurately positioned within the rocm_graph span.
         let base_time =
             span_start_time + graph_timing.setup_duration_ns + graph_timing.launch_latency_ns;
         for kernel_timing in &graph_timing.kernel_timings {
@@ -269,7 +269,7 @@ pub trait KernelOp: std::fmt::Debug + as_any::AsAny {
     }
 
     /// If this kernel's output aliases one of its inputs (i.e., writes in-place),
-    /// return the input index. Used to propagate buffer pointers in CUDA graphs.
+    /// return the input index. Used to propagate buffer pointers in HIP graphs.
     fn output_aliases_input(&self) -> Option<usize> {
         None
     }

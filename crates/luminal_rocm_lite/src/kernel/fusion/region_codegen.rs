@@ -2,8 +2,8 @@
 // Region codegen for FusionStart / FusionEnd-bracketed fused regions.
 //
 // Older fusion lowering left elementwise / FusionStart / FusionEnd nodes in the post-extraction
-// LLIR, each compiling to its own standalone CUDA kernel. PR2 collapses
-// every FusionEnd-rooted region into ONE fused CUDA kernel at codegen
+// LLIR, each compiling to its own standalone HIP kernel. PR2 collapses
+// every FusionEnd-rooted region into ONE fused HIP kernel at codegen
 // time — without rewriting the LLIR.
 //
 // Pipeline:
@@ -11,7 +11,7 @@
 //     - CompileUnit::Single(node)  — unfused non-region kernels, compiled as before.
 //     - CompileUnit::Region(rgn)   — one FE + its interior elementwise DAG +
 //                                    its FS leaves. Compiled here as a
-//                                    single CUDA kernel that reads from
+//                                    single HIP kernel that reads from
 //                                    the region's external inputs once,
 //                                    chains all elementwise bodies through
 //                                    register-resident locals, and writes
@@ -20,7 +20,7 @@
 // The CompiledKernel for a Region is keyed on the FE node and stores
 // `inputs = external producer NodeIndices` (one per interior FusionStart),
 // so the existing buffer-pointer wiring in to_host.rs picks up the right
-// device pointers at execute time. Interior Cuda*Elementwise / FusionStart nodes
+// device pointers at execute time. Interior Rocm*Elementwise / FusionStart nodes
 // never enter the kernels Vec — they have no buffers, no launches.
 // =========================================================================
 
@@ -53,9 +53,9 @@ use crate::{
 pub(crate) struct RegionUnit {
     /// The FusionEnd node that anchors this region.
     pub fe_node: NodeIndex,
-    /// Interior Cuda*Elementwise nodes, in topological order (predecessors before
+    /// Interior Rocm*Elementwise nodes, in topological order (predecessors before
     /// consumers). Used to emit register-binding statements in dependency
-    /// order in the fused CUDA kernel body.
+    /// order in the fused HIP kernel body.
     pub elementwise_topo: Vec<NodeIndex>,
     /// FusionStart nodes that bound the region's leaves. One per external
     /// read site — duplicates (different FS LLIR nodes wrapping the same
@@ -80,13 +80,13 @@ pub(crate) enum CompileUnit {
 
 /// Group a sub-DAG's topo order into compile units. Each FusionEnd node
 /// becomes the root of a `CompileUnit::Region`; the region's interior
-/// Cuda*Elementwise and FusionStart nodes are absorbed into that region and removed
+/// Rocm*Elementwise and FusionStart nodes are absorbed into that region and removed
 /// from the per-node iteration. Anything else is wrapped in
 /// `CompileUnit::Single`.
 /// Globally-absorbed FS / FE markers — the set of marker nodes that any
 /// `FusionEnd` in the LLIR walks back to during region detection. A
 /// marker is "absorbed" iff some FE in the LLIR can reach it by walking
-/// incoming edges through `FusionEnd` / Cuda*Elementwise nodes, stopping at
+/// incoming edges through `FusionEnd` / Rocm*Elementwise nodes, stopping at
 /// `FusionStart` leaves.
 ///
 /// This is computed once over the full LLIR rather than per-convex-
@@ -322,7 +322,7 @@ pub(crate) fn build_compile_units(
 // Per-elementwise body templates.
 //
 // Each entry takes the names of the local variables holding the op's
-// inputs and returns a CUDA expression evaluating to the op's output
+// inputs and returns a HIP expression evaluating to the op's output
 // (a register-resident value, no buffer involved).
 // =========================================================================
 
@@ -344,9 +344,9 @@ fn elementwise_value(local: &str, dtype: DType) -> String {
     }
 }
 
-fn elementwise_init_expr(expr: &str, dtype: DType, cuda_ty: &str) -> String {
+fn elementwise_init_expr(expr: &str, dtype: DType, hip_ty: &str) -> String {
     if matches!(dtype, DType::F8E4M3 | DType::F8E5M2 | DType::F8UE8M0) {
-        format!("{cuda_ty}({expr})")
+        format!("{hip_ty}({expr})")
     } else {
         expr.to_string()
     }
@@ -370,7 +370,7 @@ fn elementwise_body(op: &str, locals: &[&str], dtype: DType) -> String {
 }
 
 // =========================================================================
-// Region compilation — emit one CUDA kernel for the whole region.
+// Region compilation — emit one HIP kernel for the whole region.
 // =========================================================================
 
 #[allow(clippy::type_complexity)]
@@ -427,7 +427,7 @@ pub(crate) fn compile_region(
         }
     }
 
-    let cuda_ty = rocm_dtype(dtype);
+    let hip_ty = rocm_dtype(dtype);
     let includes = dtype_includes(&[dtype]);
     let (dyn_defines, _sorted_dims) = generate_dyn_dims_defines(&all_vars);
     let dyn_dims_param = if all_vars.is_empty() {
@@ -445,9 +445,9 @@ pub(crate) fn compile_region(
     // Build kernel signature: out, then one input per FS leaf in
     // `region.fs_nodes` order. The `external_inputs` list (parallel to
     // `fs_nodes`) is what the host wires into the launch params.
-    let mut signature_params: Vec<String> = vec![format!("{cuda_ty} *out")];
+    let mut signature_params: Vec<String> = vec![format!("{hip_ty} *out")];
     for i in 0..region.fs_nodes.len() {
-        signature_params.push(format!("const {cuda_ty} *in{i}"));
+        signature_params.push(format!("const {hip_ty} *in{i}"));
     }
     let signature = signature_params.join(", ");
 
@@ -481,7 +481,7 @@ pub(crate) fn compile_region(
         let fs_struct: &FusionStart = (***fs_op).downcast_ref::<FusionStart>().unwrap();
         let read_idx = flatten_strides(out_shape, &fs_struct.strides).to_kernel();
         body.push_str(&format!(
-            "        {cuda_ty} {name} = in{i}[{read_idx}];\n",
+            "        {hip_ty} {name} = in{i}[{read_idx}];\n",
             name = local_name(fs_idx),
         ));
     }
@@ -498,7 +498,7 @@ pub(crate) fn compile_region(
                 (elem.op.as_str(), elem.dtype)
             } else {
                 panic!(
-                    "region_codegen: expected Cuda*Elementwise op, got {}",
+                    "region_codegen: expected Rocm*Elementwise op, got {}",
                     op_ref.kernel_name()
                 );
             };
@@ -521,9 +521,9 @@ pub(crate) fn compile_region(
         let inputs_ref: Vec<&str> = input_locals.iter().map(|s| s.as_str()).collect();
 
         let expr = elementwise_body(elem_name, &inputs_ref, elem_dtype);
-        let expr = elementwise_init_expr(&expr, elem_dtype, cuda_ty);
+        let expr = elementwise_init_expr(&expr, elem_dtype, hip_ty);
         body.push_str(&format!(
-            "        {cuda_ty} {name} = {expr};\n",
+            "        {hip_ty} {name} = {expr};\n",
             name = local_name(op_idx),
         ));
     }

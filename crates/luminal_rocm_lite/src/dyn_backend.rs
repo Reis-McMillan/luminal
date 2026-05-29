@@ -1,4 +1,4 @@
-//! [`DynBackend`] implementation for the CUDA lite runtime.
+//! [`DynBackend`] implementation for the ROCm lite runtime.
 
 use luminal::dtype::DType;
 use luminal::dyn_backend::{BackendCompileArgs, DynBackend, compile_backend};
@@ -7,17 +7,17 @@ use luminal::prelude::*;
 use crate::rocmrc::driver::HipContext;
 use crate::runtime::RocmRuntime;
 
-/// [`DynBackend`] wrapper for [`CudaRuntime`].
+/// [`DynBackend`] wrapper for [`RocmRuntime`].
 pub struct RocmLiteDynBackend {
     pub runtime: RocmRuntime,
 }
 
 impl DynBackend for RocmLiteDynBackend {
     fn name(&self) -> &str {
-        "cuda_lite"
+        "rocm_lite"
     }
     fn device_type(&self) -> &str {
-        "cuda"
+        "rocm"
     }
 
     fn set_data_bytes(&mut self, node: NodeIndex, bytes: Vec<u8>, _dtype: DType) {
@@ -60,8 +60,8 @@ pub fn rocm_lite_factory(
     graph: &mut Graph,
     args: BackendCompileArgs,
 ) -> Result<Box<dyn DynBackend>, String> {
-    let cuda_ctx = HipContext::new(0).map_err(|e| format!("CUDA init failed: {e}"))?;
-    let stream = cuda_ctx.default_stream();
+    let hip_ctx = HipContext::new(0).map_err(|e| format!("HIP init failed: {e}"))?;
+    let stream = hip_ctx.default_stream();
     compile_backend::<RocmRuntime>(
         graph,
         args,

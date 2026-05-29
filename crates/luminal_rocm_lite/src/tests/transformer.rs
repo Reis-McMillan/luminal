@@ -1,7 +1,7 @@
-//! Fuzz tests for small transformer models on CUDA.
+//! Fuzz tests for small transformer models on ROCm.
 //!
 //! Builds a mini Llama-like transformer (RMSNorm + causal self-attention + SwiGLU MLP)
-//! and verifies CUDA execution against a CPU reference implementation using candle.
+//! and verifies ROCm execution against a CPU reference implementation using candle.
 
 use luminal::prelude::*;
 
@@ -254,11 +254,11 @@ fn build_candle_ref(input_data: &[f32], weight_data: &[(GraphTensor, Vec<f32>)])
 
 // ---- Tests ----
 
-/// Test a single transformer layer on CUDA against candle CPU reference.
+/// Test a single transformer layer on ROCm against candle CPU reference.
 #[test]
 fn test_mini_transformer_layer() {
     let Some(stream) = get_rocm_stream() else {
-        println!("CUDA not available, skipping");
+        println!("ROCm not available, skipping");
         return;
     };
 
@@ -288,11 +288,11 @@ fn test_mini_transformer_layer() {
     assert_close(&result, &expected, 1e-2, 1e-2);
 }
 
-/// Test a two-layer transformer on CUDA against candle CPU reference.
+/// Test a two-layer transformer on ROCm against candle CPU reference.
 #[test]
 fn test_mini_transformer_two_layers() {
     let Some(stream) = get_rocm_stream() else {
-        println!("CUDA not available, skipping");
+        println!("ROCm not available, skipping");
         return;
     };
 
@@ -351,7 +351,7 @@ fn test_mini_transformer_two_layers() {
 #[test]
 fn test_transformer_multi_seed() {
     let Some(stream) = get_rocm_stream() else {
-        println!("CUDA not available, skipping");
+        println!("ROCm not available, skipping");
         return;
     };
 
@@ -381,11 +381,11 @@ fn test_transformer_multi_seed() {
     }
 }
 
-/// Test just the RMSNorm component on CUDA
+/// Test just the RMSNorm component on ROCm
 #[test]
-fn test_rms_norm_cuda() {
+fn test_rms_norm_rocm() {
     let Some(stream) = get_rocm_stream() else {
-        println!("CUDA not available, skipping");
+        println!("ROCm not available, skipping");
         return;
     };
 
@@ -417,11 +417,11 @@ fn test_rms_norm_cuda() {
     assert_close(&result, &expected, 1e-3, 1e-3);
 }
 
-/// Test just the self-attention on CUDA
+/// Test just the self-attention on ROCm
 #[test]
-fn test_self_attention_cuda() {
+fn test_self_attention_rocm() {
     let Some(stream) = get_rocm_stream() else {
-        println!("CUDA not available, skipping");
+        println!("ROCm not available, skipping");
         return;
     };
 
@@ -464,11 +464,11 @@ fn test_self_attention_cuda() {
     assert_close(&result, &expected, 1e-2, 1e-2);
 }
 
-/// Test just the SwiGLU MLP on CUDA
+/// Test just the SwiGLU MLP on ROCm
 #[test]
-fn test_swiglu_mlp_cuda() {
+fn test_swiglu_mlp_rocm() {
     let Some(stream) = get_rocm_stream() else {
-        println!("CUDA not available, skipping");
+        println!("ROCm not available, skipping");
         return;
     };
 

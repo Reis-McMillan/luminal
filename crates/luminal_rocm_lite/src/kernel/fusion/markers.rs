@@ -143,7 +143,7 @@ impl EgglogOp for FusionEnd {
 
     fn rewrites(&self) -> Vec<Rule> {
         // Generic region growth works directly from HLIR elementwise ops into
-        // `Cuda*Elementwise` region nodes. The concrete HLIR op still appears in
+        // `Rocm*Elementwise` region nodes. The concrete HLIR op still appears in
         // the egraph, so fusion remains a normal nondestructive alternative, but
         // the region-internal representation is arity based instead of one
         // dedicated fused sort per operation.
@@ -158,7 +158,7 @@ impl EgglogOp for FusionEnd {
         ];
         let binaries: &[(&str, &str)] = &[("Add", "Add"), ("Mul", "Mul")];
 
-        // Grow FE → unary consumer: U(FE(inner)) → FE(CudaUnary(inner)).
+        // Grow FE → unary consumer: U(FE(inner)) → FE(RocmUnary(inner)).
         for (hlir, opcode) in unaries {
             rules.push(Rule::raw(format!(
                 "(rule (
@@ -285,7 +285,7 @@ impl EgglogOp for FusionEnd {
             )));
         }
 
-        // Merge two FEs at a binary: B(FE(ia), FE(ib)) → FE(CudaBinary(ia, ib)).
+        // Merge two FEs at a binary: B(FE(ia), FE(ib)) → FE(RocmBinary(ia, ib)).
         for (hlir, opcode) in binaries {
             rules.push(Rule::raw(format!(
                 "(rule (

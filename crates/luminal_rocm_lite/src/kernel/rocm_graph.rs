@@ -401,7 +401,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cuda_function_size() {
+    fn test_rocm_function_size() {
         assert_eq!(
             std::mem::size_of::<HipFunction>(),
             std::mem::size_of::<hipFunction_t>() + std::mem::size_of::<usize>()
@@ -470,7 +470,7 @@ mod tests {
     // HIP Graph Tests
 
     #[test]
-    fn test_cuda_graph_basic_execution() {
+    fn test_rocm_graph_basic_execution() {
         let Some(stream) = get_rocm_stream() else {
             return;
         };
@@ -502,7 +502,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cuda_graph_multiple_executions() {
+    fn test_rocm_graph_multiple_executions() {
         let Some(stream) = get_rocm_stream() else {
             return;
         };
@@ -538,7 +538,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cuda_graph_dyn_dims_surgical_update() {
+    fn test_rocm_graph_dyn_dims_surgical_update() {
         let Some(stream) = get_rocm_stream() else {
             return;
         };
@@ -608,7 +608,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cuda_graph_chain_performance() {
+    fn test_rocm_graph_chain_performance() {
         let Some(stream) = get_rocm_stream() else {
             return;
         };
@@ -645,7 +645,7 @@ mod tests {
     /// change incrementally across many executions (simulating a decode loop
     /// where position offset increments each step).
     #[test]
-    fn test_cuda_graph_incremental_dim_changes() {
+    fn test_rocm_graph_incremental_dim_changes() {
         let Some(stream) = get_rocm_stream() else {
             return;
         };

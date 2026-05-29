@@ -40,7 +40,7 @@ pub enum RocmInput {
 }
 
 /// Executable operation in the runtime graph.
-/// All operations (including CUDA graphs) are now HostOps.
+/// All operations (including HIP graphs) are now HostOps.
 pub(crate) struct ExecutableHostOp {
     stream: Arc<HipStream>,
     inputs: Vec<NodeIndex>,
@@ -166,7 +166,7 @@ pub struct RocmRuntime {
 }
 
 impl RocmRuntime {
-    /// Creates a new CudaRuntime with default configuration:
+    /// Creates a new RocmRuntime with default configuration:
     /// - Device 0
     /// - Blocking sync scheduling
     /// - Default stream
@@ -189,7 +189,7 @@ impl RocmRuntime {
         &mut self.compiled_buckets[self.active_bucket]
     }
 
-    /// Names of CUDA kernels compiled into the active bucket.
+    /// Names of HIP kernels compiled into the active bucket.
     pub fn kernel_names(&self) -> &[&'static str] {
         &self.active().kernel_names
     }
@@ -283,7 +283,7 @@ impl RocmRuntime {
                     safetensors::Dtype::F32 => {
                         let bytes = tensor.data();
                         let f32s: &[f32] = bytemuck::cast_slice(bytes);
-                        let dev = f32s.to_cuda_input(&self.hip_stream);
+                        let dev = f32s.to_rocm_input(&self.hip_stream);
                         self.hlir_buffers.insert(node, dev);
                     }
                     safetensors::Dtype::U8
@@ -293,7 +293,7 @@ impl RocmRuntime {
                     | safetensors::Dtype::F8_E5M2
                     | safetensors::Dtype::F8_E8M0 => {
                         let bytes = tensor.data();
-                        let dev = bytes.to_cuda_input(&self.hip_stream);
+                        let dev = bytes.to_rocm_input(&self.hip_stream);
                         self.hlir_buffers.insert(node, dev);
                     }
                     dtype => unimplemented!("{dtype} loading not supported yet"),
@@ -304,8 +304,8 @@ impl RocmRuntime {
 
     pub fn set_data(&mut self, id: impl ToId, data: impl ToRocmInput) {
         let id = id.to_id();
-        let cuda_input = data.to_cuda_input(&self.hip_stream);
-        self.hlir_buffers.insert(id, cuda_input);
+        let rocm_input = data.to_rocm_input(&self.hip_stream);
+        self.hlir_buffers.insert(id, rocm_input);
         self.changed_hlir.insert(id);
     }
 
@@ -318,16 +318,16 @@ impl RocmRuntime {
         self.changed_hlir.insert(id);
     }
 
-    /// Set an external CUDA device pointer as input data. Zero-copy.
+    /// Set an external ROCm device pointer as input data. Zero-copy.
     /// The caller must ensure the pointer remains valid for the runtime's lifetime.
     ///
     /// # Safety
-    /// The device pointer must point to a valid CUDA allocation on the same device
+    /// The device pointer must point to a valid ROCm allocation on the same device
     /// as this runtime's stream, with at least `n_bytes` bytes available.
     pub unsafe fn set_device_ptr(&mut self, id: impl ToId, device_ptr: u64, n_bytes: usize) {
         debug_assert!(device_ptr != 0, "set_device_ptr called with null pointer");
         let id = id.to_id();
-        // Create HipSlice view via cudarc's upgrade_device_ptr.
+        // Create HipSlice view via rocmrc's upgrade_device_ptr.
         // ManuallyDrop prevents cuMemFree on drop (external allocator owns this memory).
         let slice = unsafe {
             self.hip_stream
@@ -343,7 +343,7 @@ impl RocmRuntime {
     /// The pointer is stored lazily — resolution to LLIR nodes happens in execute().
     ///
     /// # Safety
-    /// The device pointer must point to a valid CUDA allocation with at least `n_bytes` bytes,
+    /// The device pointer must point to a valid ROCm allocation with at least `n_bytes` bytes,
     /// and must remain valid through the next execute() call.
     pub unsafe fn set_output_device_ptr(&mut self, id: impl ToId, device_ptr: u64, n_bytes: usize) {
         debug_assert!(
@@ -480,11 +480,11 @@ impl RocmRuntime {
         }
     }
 
-    /// Copy output tensor data to an external CUDA device pointer (DtoD).
-    /// Much faster than get_f32 + HtoD for CUDA-to-CUDA workflows.
+    /// Copy output tensor data to an external ROCm device pointer (DtoD).
+    /// Much faster than get_f32 + HtoD for ROCm-to-ROCm workflows.
     ///
     /// # Safety
-    /// The dest_ptr must be a valid CUDA device allocation with at least n_bytes available.
+    /// The dest_ptr must be a valid ROCm device allocation with at least n_bytes available.
     pub unsafe fn copy_output_to_device_ptr(&self, id: impl ToId, dest_ptr: u64, n_bytes: usize) {
         debug_assert!(
             dest_ptr != 0,
@@ -954,9 +954,9 @@ impl RocmRuntime {
         }
         bucket.arena_bytes = arena_end;
 
-        if std::env::var_os("LUMINAL_CUDA_MEMORY_DEBUG").is_some() {
+        if std::env::var_os("LUMINAL_ROCM_MEMORY_DEBUG").is_some() {
             eprintln!(
-                "   CUDA memory plan specs={total_spec_count} used={planned_logical_count} skipped={} spec_bytes={} used_bytes={} skipped_bytes={} logical_peak={} arena_plan={} allocations={}",
+                "   ROCm memory plan specs={total_spec_count} used={planned_logical_count} skipped={} spec_bytes={} used_bytes={} skipped_bytes={} logical_peak={} arena_plan={} allocations={}",
                 total_spec_count.saturating_sub(planned_logical_count),
                 total_spec_bytes,
                 planned_logical_bytes,
@@ -1012,16 +1012,16 @@ impl RocmRuntime {
             }
         }
 
-        // CUDA graph building is now handled internally by RocmGraphOp on first execution
+        // HIP graph building is now handled internally by RocmGraphOp on first execution
     }
 }
 
 pub trait ToRocmInput {
-    fn to_cuda_input(self, stream: &Arc<HipStream>) -> RocmInput;
+    fn to_rocm_input(self, stream: &Arc<HipStream>) -> RocmInput;
 }
 
 impl ToRocmInput for &[f32] {
-    fn to_cuda_input(self, stream: &Arc<HipStream>) -> RocmInput {
+    fn to_rocm_input(self, stream: &Arc<HipStream>) -> RocmInput {
         RocmInput::Buffer(
             stream
                 .clone_htod(unsafe {
@@ -1033,7 +1033,7 @@ impl ToRocmInput for &[f32] {
 }
 
 impl ToRocmInput for Vec<i32> {
-    fn to_cuda_input(self, stream: &Arc<HipStream>) -> RocmInput {
+    fn to_rocm_input(self, stream: &Arc<HipStream>) -> RocmInput {
         RocmInput::Buffer(
             stream
                 .clone_htod(unsafe {
@@ -1045,7 +1045,7 @@ impl ToRocmInput for Vec<i32> {
 }
 
 impl ToRocmInput for Vec<f32> {
-    fn to_cuda_input(self, stream: &Arc<HipStream>) -> RocmInput {
+    fn to_rocm_input(self, stream: &Arc<HipStream>) -> RocmInput {
         RocmInput::Buffer(
             stream
                 .clone_htod(unsafe {
@@ -1057,7 +1057,7 @@ impl ToRocmInput for Vec<f32> {
 }
 
 impl ToRocmInput for Vec<f16> {
-    fn to_cuda_input(self, stream: &Arc<HipStream>) -> RocmInput {
+    fn to_rocm_input(self, stream: &Arc<HipStream>) -> RocmInput {
         RocmInput::Buffer(
             stream
                 .clone_htod(unsafe {
@@ -1069,7 +1069,7 @@ impl ToRocmInput for Vec<f16> {
 }
 
 impl ToRocmInput for Vec<bf16> {
-    fn to_cuda_input(self, stream: &Arc<HipStream>) -> RocmInput {
+    fn to_rocm_input(self, stream: &Arc<HipStream>) -> RocmInput {
         RocmInput::Buffer(
             stream
                 .clone_htod(unsafe {
@@ -1081,13 +1081,13 @@ impl ToRocmInput for Vec<bf16> {
 }
 
 impl ToRocmInput for &[u8] {
-    fn to_cuda_input(self, stream: &Arc<HipStream>) -> RocmInput {
+    fn to_rocm_input(self, stream: &Arc<HipStream>) -> RocmInput {
         RocmInput::Buffer(stream.clone_htod(self).unwrap())
     }
 }
 
 impl ToRocmInput for Vec<u8> {
-    fn to_cuda_input(self, stream: &Arc<HipStream>) -> RocmInput {
+    fn to_rocm_input(self, stream: &Arc<HipStream>) -> RocmInput {
         RocmInput::Buffer(stream.clone_htod(&self).unwrap())
     }
 }
@@ -1228,15 +1228,15 @@ impl Runtime for RocmRuntime {
         // Sync before clearing old data to ensure all operations complete
         let _ = self.hip_stream.synchronize();
 
-        // Sync after clearing all buffers to ensure CUDA resources are freed
+        // Sync after clearing all buffers to ensure ROCm resources are freed
         if let Err(e) = self.hip_stream.synchronize() {
             let _ = self.hip_stream.context().bind_to_thread();
             if self.hip_stream.synchronize().is_err() {
-                panic!("CUDA context unrecoverable after sync error: {e}");
+                panic!("HIP context unrecoverable after sync error: {e}");
             }
         }
 
-        // Rebind CUDA context to thread after cleanup to ensure valid state
+        // Rebind HIP context to thread after cleanup to ensure valid state
         let _ = self.hip_stream.context().bind_to_thread();
 
         let bucket = self.compile_bucket(llir_graph);
@@ -1247,7 +1247,7 @@ impl Runtime for RocmRuntime {
         // Mark all HLIR inputs as changed so their pointers get re-cached in execute
         self.changed_hlir.extend(self.hlir_buffers.keys().copied());
 
-        // Prebuild CUDA graphs if we have a previous dyn_map (e.g., from search/profile)
+        // Prebuild HIP graphs if we have a previous dyn_map (e.g., from search/profile)
         let bucket = &self.compiled_buckets[0];
         if !bucket.last_dyn_map.is_empty() {
             let dyn_map = bucket.last_dyn_map.clone();
@@ -1458,7 +1458,7 @@ impl Runtime for RocmRuntime {
                 self.changed_hlir.clear();
             }
         }
-        // Ensure all CUDA graphs are built (handles first execute and any missing graphs)
+        // Ensure all HIP graphs are built (handles first execute and any missing graphs)
         self.prebuild_graphs(dyn_map);
 
         // Resolve external output pointer registrations (zero-copy output path)
@@ -1530,12 +1530,12 @@ impl Runtime for RocmRuntime {
                 )
                 .unwrap_or_else(|e| {
                     panic!(
-                        "CUDA execute error in {:?}: {e}",
+                        "ROCm execute error in {:?}: {e}",
                         exec_op.internal.stats_name().unwrap_or("unknown")
                     );
                 });
         }
-        // Single sync at end - CUDA stream ordering guarantees sequential execution
+        // Single sync at end - HIP stream ordering guarantees sequential execution
         self.hip_stream.synchronize().unwrap();
         self.last_total_time_us = total_start.elapsed().as_secs_f64() * 1_000_000.0;
 
@@ -1627,7 +1627,7 @@ impl RocmRuntime {
         // Clone llir_graph so we can modify it
         let mut llir_graph = llir_graph.clone();
 
-        // Compile kernel subgraphs into CudaGraphOps (which implement HostOp)
+        // Compile kernel subgraphs into RocmGraphOps (which implement HostOp)
         crate::kernel::kernel_to_host(&mut llir_graph, &self.hip_stream, &mut self.kernel_cache);
 
         // Extract all runtime metadata we used to recover from the lowered LLIR
@@ -1669,7 +1669,7 @@ impl RocmRuntime {
                 //
                 // The default assumption is "yes" for ordinary kernel ops
                 // (Conv outputs, matmul outputs, etc). FusionStart and
-                // Cuda*Elementwise are the exceptions — they're synthetic
+                // Rocm*Elementwise are the exceptions — they're synthetic
                 // nodes that the fusion rewrites add inside a region; the
                 // megakernel computes them in registers and never writes
                 // to memory, so allocating a buffer would just be waste.
@@ -1679,18 +1679,18 @@ impl RocmRuntime {
                 // consumer's RocmGraphOp will look up a device pointer for
                 // the producer in the runtime's buffer_map and find none,
                 // pass NULL into the kernel, and dereference it →
-                // `CUDA_ERROR_ILLEGAL_ADDRESS`. Multi-consumer fan-out is
+                // `hipErrorIllegalAddress`. Multi-consumer fan-out is
                 // the typical trigger: rule R fuses op X into one region
                 // (FusionStart-wrapping it as input), but X is also used by
                 // an unrelated downstream op that lives in another region.
                 //
                 // Safe over-approximation: if the node is a FusionStart /
-                // Cuda*Elementwise and *any* of its consumers is a FusionStart
+                // Rocm*Elementwise and *any* of its consumers is a FusionStart
                 // (which can only happen when that consumer is the leaf
                 // of a different region) or a non-marker op (e.g. an
                 // unfused Add/Mul reading the value directly), allocate a
                 // buffer so cross-region reads have somewhere to land.
-                let is_marker = kernel_name == "FusionStart" || kernel_name.starts_with("Cuda");
+                let is_marker = kernel_name == "FusionStart" || kernel_name.starts_with("Rocm");
                 let has_external_consumer = is_marker
                     && llir_graph
                         .neighbors_directed(node, Direction::Outgoing)
@@ -1999,7 +1999,7 @@ impl RocmRuntime {
     }
 
     /// Record GPU timings to an existing perfetto trace file.
-    pub fn record_cuda_perfetto_trace(&mut self, mut perfetto_guard: PerfettoGuard) {
+    pub fn record_rocm_perfetto_trace(&mut self, mut perfetto_guard: PerfettoGuard) {
         perfetto_guard.stop();
         let data = std::fs::read(&perfetto_guard.path).unwrap();
         let mut trace = luminal_tracing::schema::Trace::decode(data.as_slice()).unwrap();

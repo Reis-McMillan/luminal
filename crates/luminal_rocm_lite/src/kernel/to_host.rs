@@ -38,7 +38,7 @@ use crate::{
 struct CompiledKernel {
     /// The node index in the original llir_graph
     node: NodeIndex,
-    /// The compiled CUDA function
+    /// The compiled HIP function
     function: HipFunction,
     /// Launch grid dimensions (blocks)
     grid: (Expression, Expression, Expression),
@@ -52,7 +52,7 @@ struct CompiledKernel {
     input_labels: Vec<String>,
     /// Reference to the KernelOp for trait methods
     kernel_op: Arc<Box<dyn KernelOp>>,
-    /// Whether this compiled CUDA function has a trailing dyn_dims parameter.
+    /// Whether this compiled HIP function has a trailing dyn_dims parameter.
     has_dyn_dims_param: bool,
     /// Internal buffers allocated for this kernel
     internal_bufs: Vec<HipSlice<u8>>,
@@ -122,15 +122,15 @@ impl UnifiedKernelParams {
 }
 
 /// Mutable state for RocmGraphOp that needs interior mutability.
-struct CudaGraphOpState {
+struct RocmGraphOpState {
     /// Compiled kernels in topological order
     kernels: Vec<CompiledKernel>,
     /// Shared device buffer for dynamic dimensions
     dyn_dims_buffer: Option<HipSlice<i32>>,
-    /// CUDA graph handle
-    cuda_graph: Option<RocmGraphHandle>,
-    /// CUDA graph exec handle
-    cuda_graph_exec: Option<RocmGraphExecHandle>,
+    /// HIP graph handle
+    rocm_graph: Option<RocmGraphHandle>,
+    /// HIP graph exec handle
+    rocm_graph_exec: Option<RocmGraphExecHandle>,
     /// Mapping from kernel node to graph node
     node_to_graph_node: FxHashMap<NodeIndex, hipGraphNode_t>,
     /// Kernel params for each kernel
@@ -143,13 +143,13 @@ struct CudaGraphOpState {
     timing_events: Vec<rocmrc::driver::sys::hipEvent_t>,
 }
 
-impl CudaGraphOpState {
+impl RocmGraphOpState {
     fn new(kernels: Vec<CompiledKernel>) -> Self {
         Self {
             kernels,
             dyn_dims_buffer: None,
-            cuda_graph: None,
-            cuda_graph_exec: None,
+            rocm_graph: None,
+            rocm_graph_exec: None,
             node_to_graph_node: FxHashMap::default(),
             kernel_params: Vec::new(),
             last_dyn_values: FxHashMap::default(),
@@ -159,9 +159,9 @@ impl CudaGraphOpState {
     }
 }
 
-/// A CUDA graph operation that implements HostOp.
+/// A HIP graph operation that implements HostOp.
 ///
-/// This wraps a subgraph of KernelOps into a single executable CUDA graph.
+/// This wraps a subgraph of KernelOps into a single executable HIP graph.
 /// It manages graph building, execution, and dynamic updates.
 pub struct RocmGraphOp {
     /// All nodes that this graph needs buffers for (kernels + their inputs)
@@ -170,10 +170,10 @@ pub struct RocmGraphOp {
     buffer_sizes: FxHashMap<NodeIndex, Expression>,
     /// Dynamic dimensions used by this graph (sorted alphabetically)
     dyn_dims_order: Vec<char>,
-    /// The CUDA stream (needed for operations)
+    /// The HIP stream (needed for operations)
     stream: Arc<HipStream>,
     /// Mutable state wrapped in RefCell for interior mutability
-    state: RefCell<CudaGraphOpState>,
+    state: RefCell<RocmGraphOpState>,
 }
 
 impl RocmGraphOp {
@@ -182,7 +182,7 @@ impl RocmGraphOp {
         buffer_sizes: FxHashMap<NodeIndex, Expression>,
         dyn_dims_order: Vec<char>,
         stream: Arc<HipStream>,
-        state: CudaGraphOpState,
+        state: RocmGraphOpState,
     ) -> Self {
         Self {
             buffer_nodes,
@@ -194,11 +194,11 @@ impl RocmGraphOp {
     }
 
     /// LLIR node IDs of every kernel in this RocmGraphOp, in the order
-    /// they execute inside the compiled CUDA graph. This is the
+    /// they execute inside the compiled HIP graph. This is the
     /// toposort `kernel_to_host` used at compile time, preserved here
     /// so the runtime can compute live ranges that match real
     /// execution order: each kernel in `state.kernels` was added to
-    /// the CUDA graph with `prev_graph_node` as its sole dependency,
+    /// the HIP graph with `prev_graph_node` as its sole dependency,
     /// which serializes them.
     pub fn kernel_topo_order(&self) -> Vec<NodeIndex> {
         self.state.borrow().kernels.iter().map(|k| k.node).collect()
@@ -365,7 +365,7 @@ impl RocmGraphOp {
     ) -> anyhow::Result<()> {
         if Self::kernel_requires_output_buffer(kernel, dyn_map) && output_ptr == 0 {
             anyhow::bail!(
-                "missing output buffer for CUDA kernel {} at LLIR node {:?}",
+                "missing output buffer for HIP kernel {} at LLIR node {:?}",
                 kernel.kernel_name,
                 kernel.node,
             );
@@ -379,7 +379,7 @@ impl RocmGraphOp {
                     .map(String::as_str)
                     .unwrap_or("unknown");
                 anyhow::bail!(
-                    "missing input buffer {idx} for CUDA kernel {} at LLIR node {:?}; input LLIR node {:?} ({input_label})",
+                    "missing input buffer {idx} for HIP kernel {} at LLIR node {:?}; input LLIR node {:?} ({input_label})",
                     kernel.kernel_name,
                     kernel.node,
                     input_node,
@@ -390,7 +390,7 @@ impl RocmGraphOp {
         Ok(())
     }
 
-    /// Execute the CUDA graph with the given buffers and dynamic dimensions.
+    /// Execute the HIP graph with the given buffers and dynamic dimensions.
     fn execute_internal(
         &self,
         stream: &Arc<HipStream>,
@@ -398,7 +398,7 @@ impl RocmGraphOp {
         dyn_map: &FxHashMap<char, usize>,
     ) -> anyhow::Result<()> {
         let mut state = self.state.borrow_mut();
-        let _span = span!(Level::TRACE, "cuda_graph", kernels = state.kernels.len()).entered();
+        let _span = span!(Level::TRACE, "rocm_graph", kernels = state.kernels.len()).entered();
 
         // Check if dyn_map changed
         let dyn_map_changed = dyn_map.len() != state.last_dyn_values.len()
@@ -429,8 +429,8 @@ impl RocmGraphOp {
         // Dim-only changes (e.g. position offset `p` incrementing each decode step) are
         // handled by updating the dyn_dims device buffer + kernel node params in-place.
         if needs_internal_realloc {
-            state.cuda_graph = None;
-            state.cuda_graph_exec = None;
+            state.rocm_graph = None;
+            state.rocm_graph_exec = None;
             state.node_to_graph_node.clear();
             state.kernel_params.clear();
         }
@@ -456,8 +456,8 @@ impl RocmGraphOp {
             }
         }
 
-        // Build CUDA graph if needed
-        if state.cuda_graph.is_none() {
+        // Build HIP graph if needed
+        if state.rocm_graph.is_none() {
             self.build_graph(&mut state, stream, buffers, dyn_map)?;
         }
 
@@ -521,7 +521,7 @@ impl RocmGraphOp {
                 };
                 if kernel.has_dyn_dims_param && kernel_dyn_dims_ptr == 0 {
                     anyhow::bail!(
-                        "missing dyn_dims buffer for CUDA kernel {} at LLIR node {:?}",
+                        "missing dyn_dims buffer for HIP kernel {} at LLIR node {:?}",
                         kernel.kernel_name,
                         kernel.node,
                     );
@@ -537,9 +537,9 @@ impl RocmGraphOp {
                 state.kernel_params[idx] = UnifiedKernelParams::new(param_values);
             }
 
-            // Now update CUDA graph nodes
+            // Now update HIP graph nodes
             state
-                .cuda_graph_exec
+                .rocm_graph_exec
                 .as_ref()
                 .unwrap()
                 .ctx
@@ -567,7 +567,7 @@ impl RocmGraphOp {
                     || block_dim.2 == 0
                 {
                     anyhow::bail!(
-                        "invalid CUDA launch dimensions for kernel {} at LLIR node {:?}: grid={grid_dim:?} block={block_dim:?}",
+                        "invalid HIP launch dimensions for kernel {} at LLIR node {:?}: grid={grid_dim:?} block={block_dim:?}",
                         kernel.kernel_name,
                         kernel.node,
                     );
@@ -577,7 +577,7 @@ impl RocmGraphOp {
 
                 // Get params pointer first to avoid borrowing state twice
                 let params_ptr = state.kernel_params[idx].as_rocm_params();
-                let exec = state.cuda_graph_exec.as_mut().unwrap();
+                let exec = state.rocm_graph_exec.as_mut().unwrap();
                 unsafe {
                     exec.update_kernel_node(
                         graph_node, cu_func, grid_dim, block_dim, shared_mem, params_ptr,
@@ -590,15 +590,15 @@ impl RocmGraphOp {
         }
 
         // Launch the graph
-        state.cuda_graph_exec.as_ref().unwrap().launch(stream)?;
+        state.rocm_graph_exec.as_ref().unwrap().launch(stream)?;
 
         Ok(())
     }
 
-    /// Build the CUDA graph from compiled kernels.
+    /// Build the HIP graph from compiled kernels.
     fn build_graph(
         &self,
-        state: &mut std::cell::RefMut<'_, CudaGraphOpState>,
+        state: &mut std::cell::RefMut<'_, RocmGraphOpState>,
         stream: &Arc<HipStream>,
         buffers: &FxHashMap<NodeIndex, DeviceBuffer>,
         dyn_map: &FxHashMap<char, usize>,
@@ -677,7 +677,7 @@ impl RocmGraphOp {
                 || block_dim.2 == 0
             {
                 anyhow::bail!(
-                    "invalid CUDA launch dimensions for kernel {} at LLIR node {:?}: grid={grid_dim:?} block={block_dim:?}",
+                    "invalid HIP launch dimensions for kernel {} at LLIR node {:?}: grid={grid_dim:?} block={block_dim:?}",
                     kernel.kernel_name,
                     kernel.node,
                 );
@@ -698,7 +698,7 @@ impl RocmGraphOp {
             };
             if kernel.has_dyn_dims_param && kernel_dyn_dims_ptr == 0 {
                 anyhow::bail!(
-                    "missing dyn_dims buffer for CUDA kernel {} at LLIR node {:?}",
+                    "missing dyn_dims buffer for HIP kernel {} at LLIR node {:?}",
                     kernel.kernel_name,
                     kernel.node,
                 );
@@ -715,7 +715,7 @@ impl RocmGraphOp {
 
             let cu_func = unsafe { kernel.function.raw_function() };
             let kernel_node = kernel.node;
-            if std::env::var_os("LUMINAL_CUDA_DEBUG_GRAPH").is_some() {
+            if std::env::var_os("LUMINAL_ROCM_DEBUG_GRAPH").is_some() {
                 eprintln!(
                     "cuGraphAddKernelNode kernel={} node={:?} grid={grid_dim:?} block={block_dim:?} shared_mem={shared_mem} inputs={} has_dyn={} params={}",
                     kernel.kernel_name,
@@ -771,8 +771,8 @@ impl RocmGraphOp {
 
         let exec = graph.instantiate()?;
 
-        state.cuda_graph = Some(graph);
-        state.cuda_graph_exec = Some(exec);
+        state.rocm_graph = Some(graph);
+        state.rocm_graph_exec = Some(exec);
         state.last_dyn_values = dyn_map.clone();
         state.last_buffer_ptrs = buffer_ptrs;
 
@@ -785,23 +785,23 @@ impl Drop for RocmGraphOp {
         let mut state = self.state.borrow_mut();
 
         // Destroy timing events first
-        let ctx = state.cuda_graph_exec.as_ref().map(|exec| exec.ctx.clone());
+        let ctx = state.rocm_graph_exec.as_ref().map(|exec| exec.ctx.clone());
         if let Some(ctx) = ctx {
             for event in state.timing_events.drain(..) {
                 destroy_rocm_event(&ctx, event);
             }
         }
 
-        // Destroy CUDA graph handles BEFORE freeing buffers they reference.
+        // Destroy HIP graph handles BEFORE freeing buffers they reference.
         // The graph exec holds device pointers to dyn_dims_buffer and internal_bufs,
         // so it must be destroyed first to avoid dangling pointer issues.
-        drop(state.cuda_graph_exec.take());
-        drop(state.cuda_graph.take());
+        drop(state.rocm_graph_exec.take());
+        drop(state.rocm_graph.take());
 
         // Now safe to free dynamically allocated GPU buffers
         // (dyn_dims_buffer and internal_bufs are freed by normal Drop)
 
-        // Constants point to __constant__ memory in the CUDA module,
+        // Constants point to __constant__ memory in the HIP module,
         // not dynamically allocated — must not be freed.
         for kernel in state.kernels.iter_mut() {
             let constants = std::mem::take(&mut kernel.constants);
@@ -812,7 +812,7 @@ impl Drop for RocmGraphOp {
     }
 }
 
-/// Compile KernelOp subgraphs in the LLIR graph into CudaGraphOps.
+/// Compile KernelOp subgraphs in the LLIR graph into RocmGraphOps.
 ///
 /// This function:
 /// 1. Finds all KernelOp nodes in the graph
@@ -821,11 +821,11 @@ impl Drop for RocmGraphOp {
 /// 4. Adds the RocmGraphOp node to the llir_graph with appropriate edges
 ///
 /// Note: KernelOp nodes remain in the graph for buffer allocation and edge tracking.
-/// Their execution is handled by the RocmGraphOp via the CUDA graph API.
+/// Their execution is handled by the RocmGraphOp via the HIP graph API.
 #[allow(clippy::type_complexity)]
 pub fn kernel_to_host(
     llir_graph: &mut LLIRGraph,
-    cuda_stream: &Arc<HipStream>,
+    hip_stream: &Arc<HipStream>,
     kernel_cache: &mut FxHashMap<String, (Arc<HipModule>, HipFunction)>,
 ) {
     let _span = span!(Level::TRACE, "kernel_to_host").entered();
@@ -840,7 +840,7 @@ pub fn kernel_to_host(
     }
 
     let kernel_subgraphs = partition_marked_convex(llir_graph, &kernel_ops_in_graph).unwrap();
-    // Compute the set of FS / FE / Cuda*Elementwise nodes globally absorbed by some
+    // Compute the set of FS / FE / Rocm*Elementwise nodes globally absorbed by some
     // FusionEnd in the LLIR. Used by `build_compile_units` to suppress
     // standalone marker compile units for shared FS leaves whose consumers
     // live in a different convex subgraph than the FS itself.
@@ -877,9 +877,9 @@ pub fn kernel_to_host(
     };
 
     // Track which kernel node belongs to which RocmGraphOp (for later edge creation)
-    let mut kernel_to_cuda_graph: FxHashMap<NodeIndex, NodeIndex> = FxHashMap::default();
+    let mut kernel_to_rocm_graph: FxHashMap<NodeIndex, NodeIndex> = FxHashMap::default();
     // Track all RocmGraphOp nodes and their subgraphs for edge creation
-    let mut cuda_graph_subgraphs: Vec<(NodeIndex, FxHashSet<NodeIndex>)> = Vec::new();
+    let mut rocm_graph_subgraphs: Vec<(NodeIndex, FxHashSet<NodeIndex>)> = Vec::new();
 
     for subgraph in kernel_subgraphs {
         // Compile kernels in topological order
@@ -910,7 +910,7 @@ pub fn kernel_to_host(
 
         // Group the topo order into compile units: each FusionEnd-rooted
         // region collapses to a single CompileUnit::Region (one fused
-        // CUDA kernel for the whole DAG); everything else stays as
+        // HIP kernel for the whole DAG); everything else stays as
         // CompileUnit::Single (the existing per-op compile path).
         let compile_units =
             region_codegen::build_compile_units(&topo_order, llir_graph, &globally_absorbed);
@@ -925,7 +925,7 @@ pub fn kernel_to_host(
                         .unwrap();
 
                     let (kernel_function, _, kernel_str, grid, block, shared_mem, constants) =
-                        kernel_op_ref.compile(cuda_stream, kernel_cache);
+                        kernel_op_ref.compile(hip_stream, kernel_cache);
                     let has_dyn_dims_param = kernel_str.contains("dyn_dims");
 
                     // Collect inputs from graph edges
@@ -941,7 +941,7 @@ pub fn kernel_to_host(
                         assert_eq!(
                             inputs.len(),
                             expected_inputs,
-                            "invalid input arity for CUDA kernel {} at LLIR node {:?}",
+                            "invalid input arity for HIP kernel {} at LLIR node {:?}",
                             kernel_op_ref.kernel_name(),
                             kernel_node_idx,
                         );
@@ -987,11 +987,11 @@ pub fn kernel_to_host(
                     ));
                 }
                 CompileUnit::Region(region) => {
-                    // Generate one fused CUDA kernel for the whole region.
+                    // Generate one fused HIP kernel for the whole region.
                     let compiled = region_codegen::compile_region(
                         region,
                         llir_graph,
-                        cuda_stream,
+                        hip_stream,
                         kernel_cache,
                     );
                     let has_dyn_dims_param = compiled.kernel_str.contains("dyn_dims");
@@ -1070,25 +1070,25 @@ pub fn kernel_to_host(
         let buffer_nodes: Vec<NodeIndex> = all_buffer_nodes.into_iter().collect();
 
         // Create RocmGraphOp with RefCell for interior mutability
-        let state = CudaGraphOpState::new(kernels);
+        let state = RocmGraphOpState::new(kernels);
 
-        let cuda_graph_op = RocmGraphOp::new(
+        let rocm_graph_op = RocmGraphOp::new(
             buffer_nodes,
             all_buffer_sizes,
             dyn_dims_order,
-            cuda_stream.clone(),
+            hip_stream.clone(),
             state,
         );
 
         // Add RocmGraphOp to llir_graph as a HostOp
-        let cuda_graph_node =
-            llir_graph.add_node(LLIROp::new(Box::new(cuda_graph_op) as Box<dyn HostOp>));
+        let rocm_graph_node =
+            llir_graph.add_node(LLIROp::new(Box::new(rocm_graph_op) as Box<dyn HostOp>));
 
         // Track which kernel nodes belong to this RocmGraphOp
         for kernel_node in &subgraph {
-            kernel_to_cuda_graph.insert(*kernel_node, cuda_graph_node);
+            kernel_to_rocm_graph.insert(*kernel_node, rocm_graph_node);
         }
-        cuda_graph_subgraphs.push((cuda_graph_node, subgraph.clone()));
+        rocm_graph_subgraphs.push((rocm_graph_node, subgraph.clone()));
 
         // Find external inputs: nodes outside subgraph that have edges into
         // subgraph. Also include normalized FusionStart predecessors, because
@@ -1104,23 +1104,23 @@ pub fn kernel_to_host(
 
         // Add edges from external inputs to RocmGraphOp
         for input in &external_inputs {
-            llir_graph.add_edge(*input, cuda_graph_node, ());
+            llir_graph.add_edge(*input, rocm_graph_node, ());
         }
 
         // Note: We intentionally keep the kernel nodes in the graph.
         // They are needed for:
         // 1. Buffer allocation (their output_size determines buffer sizes)
         // 2. Edge tracking (other ops like cuBLAS reference specific kernel outputs)
-        // The RocmGraphOp handles their execution via the CUDA graph API.
+        // The RocmGraphOp handles their execution via the HIP graph API.
     }
 
-    // Second pass: Add edges between CudaGraphOps based on kernel dependencies.
+    // Second pass: Add edges between RocmGraphOps based on kernel dependencies.
     // This ensures proper execution ordering when a kernel in one RocmGraphOp
     // produces output consumed by a kernel in another RocmGraphOp.
     let mut edges_to_add: Vec<(NodeIndex, NodeIndex)> = Vec::new();
 
-    for (cuda_graph_node, subgraph) in &cuda_graph_subgraphs {
-        // Find external consumers that are kernels belonging to other CudaGraphOps
+    for (rocm_graph_node, subgraph) in &rocm_graph_subgraphs {
+        // Find external consumers that are kernels belonging to other RocmGraphOps
         for producer_node in subgraph {
             for edge in llir_graph.edges_directed(*producer_node, Direction::Outgoing) {
                 let consumer = edge.target();
@@ -1128,17 +1128,17 @@ pub fn kernel_to_host(
                     continue; // Same subgraph
                 }
                 // Check if consumer is a kernel in another RocmGraphOp
-                if let Some(&consumer_cuda_graph) = kernel_to_cuda_graph.get(&consumer)
-                    && consumer_cuda_graph != *cuda_graph_node
+                if let Some(&consumer_rocm_graph) = kernel_to_rocm_graph.get(&consumer)
+                    && consumer_rocm_graph != *rocm_graph_node
                 {
-                    edges_to_add.push((*cuda_graph_node, consumer_cuda_graph));
+                    edges_to_add.push((*rocm_graph_node, consumer_rocm_graph));
                 }
                 // Also add edges to HostOps (like cuBLAS ops) that consume our outputs
                 if llir_graph[consumer]
                     .to_dialect::<dyn super::super::host::HostOp>()
                     .is_some()
                 {
-                    edges_to_add.push((*cuda_graph_node, consumer));
+                    edges_to_add.push((*rocm_graph_node, consumer));
                 }
             }
         }
@@ -1165,8 +1165,8 @@ pub fn kernel_to_host(
     }
 
     // Strip fully-absorbed marker nodes (FusionStart, nested FusionEnd,
-    // Cuda*Elementwise) from the LLIR. Region codegen has already folded them into
-    // a single fused CUDA function anchored at each region's root
+    // Rocm*Elementwise) from the LLIR. Region codegen has already folded them into
+    // a single fused HIP function anchored at each region's root
     // FusionEnd; the absorbed nodes have no consumers outside the region
     // and never need their own buffers. Removing them keeps later
     // per-execute walks (e.g., `allocate_intermediate_buffers`) from

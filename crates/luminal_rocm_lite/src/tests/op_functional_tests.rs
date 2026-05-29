@@ -13,17 +13,17 @@ use crate::runtime::RocmRuntime;
 use super::utilities::{
     GENOME_FUZZ_COUNT, TOLERANCE_SAFETY_FACTOR, assert_close, dtype_epsilon, fuzz_genomes,
     gen_slice_range, get_rocm_stream, gpu_supports_dtype, random_f32_vec, random_i32_vec,
-    test_binary_cuda, test_mod, test_unary_cuda, to_candle_dtype,
+    test_binary_rocm, test_mod, test_unary_rocm, to_candle_dtype,
 };
 
-// The property-based op tests each build/search CUDA graphs for multiple random
-// shapes. They are ignored by default to keep the main CUDA unit suite short;
-// run `cargo test -p luminal_cuda_lite -- --ignored` for the broader sweeps.
+// The property-based op tests each build/search HIP graphs for multiple random
+// shapes. They are ignored by default to keep the main ROCm unit suite short;
+// run `cargo test -p luminal_rocm_lite -- --ignored` for the broader sweeps.
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(5))]
 
-    #[ignore = "expensive CUDA op proptest sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
+    #[ignore = "expensive ROCm op proptest sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
 
 
     #[test]
@@ -31,11 +31,11 @@ proptest! {
         let gen_lambda = |n, s| random_f32_vec(n, s, -0.5, 0.5);
         let eps = dtype_epsilon(luminal::dtype::DType::F32);
         let (rtol, atol) = (eps * TOLERANCE_SAFETY_FACTOR, eps * TOLERANCE_SAFETY_FACTOR);
-        test_binary_cuda(x, x, |a, b| a + b, |a, b| (&a + &b).unwrap(), gen_lambda, gen_lambda, seed, rtol, atol);
-        test_binary_cuda((y, x), (y, x), |a, b| a + b, |a, b| (&a + &b).unwrap(), gen_lambda, gen_lambda, seed, rtol, atol);
+        test_binary_rocm(x, x, |a, b| a + b, |a, b| (&a + &b).unwrap(), gen_lambda, gen_lambda, seed, rtol, atol);
+        test_binary_rocm((y, x), (y, x), |a, b| a + b, |a, b| (&a + &b).unwrap(), gen_lambda, gen_lambda, seed, rtol, atol);
     }
 
-    #[ignore = "expensive CUDA op proptest sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
+    #[ignore = "expensive ROCm op proptest sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
 
 
     #[test]
@@ -43,29 +43,29 @@ proptest! {
         let gen_lambda = |n, s| random_f32_vec(n, s, -0.5, 0.5);
         let eps = dtype_epsilon(luminal::dtype::DType::F32);
         let (rtol, atol) = (eps * TOLERANCE_SAFETY_FACTOR, eps * TOLERANCE_SAFETY_FACTOR);
-        test_binary_cuda(x, x, |a, b| a * b, |a, b| (&a * &b).unwrap(), gen_lambda, gen_lambda, seed, rtol, atol);
-        test_binary_cuda((y, x), (y, x), |a, b| a * b, |a, b| (&a * &b).unwrap(), gen_lambda, gen_lambda, seed, rtol, atol);
+        test_binary_rocm(x, x, |a, b| a * b, |a, b| (&a * &b).unwrap(), gen_lambda, gen_lambda, seed, rtol, atol);
+        test_binary_rocm((y, x), (y, x), |a, b| a * b, |a, b| (&a * &b).unwrap(), gen_lambda, gen_lambda, seed, rtol, atol);
     }
 
-    #[ignore = "expensive CUDA op proptest sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
+    #[ignore = "expensive ROCm op proptest sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
 
 
     #[test]
     fn test_max(rows in 1usize..8, cols in 1usize..8, seed in any::<u64>()) {
         let gen_lambda = |n, s| random_f32_vec(n, s, -0.5, 0.5);
-        test_unary_cuda((rows, cols), |a| a.max(1), |a| a.max(1).unwrap(), gen_lambda, seed);
+        test_unary_rocm((rows, cols), |a| a.max(1), |a| a.max(1).unwrap(), gen_lambda, seed);
     }
 
-    #[ignore = "expensive CUDA op proptest sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
+    #[ignore = "expensive ROCm op proptest sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
 
 
     #[test]
     fn test_mean(rows in 1usize..8, cols in 1usize..8, seed in any::<u64>()) {
         let gen_lambda = |n, s| random_f32_vec(n, s, -0.5, 0.5);
-        test_unary_cuda((rows, cols), |a| a.mean(1), |a| a.mean(1).unwrap(), gen_lambda, seed);
+        test_unary_rocm((rows, cols), |a| a.mean(1), |a| a.mean(1).unwrap(), gen_lambda, seed);
     }
 
-    #[ignore = "expensive CUDA op proptest sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
+    #[ignore = "expensive ROCm op proptest sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
 
 
     #[test]
@@ -137,63 +137,63 @@ proptest! {
         let atol = 5.0 * eps;
 
         let gen_lambda = |n, s| random_f32_vec(n, s, -0.5, 0.5);
-        test_binary_cuda(a_shape, b_shape, luminal_op, candle_op, gen_lambda, gen_lambda, seed, rtol, atol);
+        test_binary_rocm(a_shape, b_shape, luminal_op, candle_op, gen_lambda, gen_lambda, seed, rtol, atol);
     }
 
     // Unary ops tests
-    #[ignore = "expensive CUDA op proptest sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
+    #[ignore = "expensive ROCm op proptest sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
 
     #[test]
     fn test_exp2(x in 1usize..100, y in 1usize..5, seed in any::<u64>()) {
         // exp2(x) = 2^x, verified by computing 2^x using exp(x * ln(2))
         let gen_lambda = |n, s| random_f32_vec(n, s, -0.5, 0.5);
-        test_unary_cuda(x, |a| a.exp2(), |a| (a * 2.0f64.ln()).unwrap().exp().unwrap(), gen_lambda, seed);
-        test_unary_cuda((y, x), |a| a.exp2(), |a| (a * 2.0f64.ln()).unwrap().exp().unwrap(), gen_lambda, seed);
+        test_unary_rocm(x, |a| a.exp2(), |a| (a * 2.0f64.ln()).unwrap().exp().unwrap(), gen_lambda, seed);
+        test_unary_rocm((y, x), |a| a.exp2(), |a| (a * 2.0f64.ln()).unwrap().exp().unwrap(), gen_lambda, seed);
     }
 
-    #[ignore = "expensive CUDA op proptest sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
+    #[ignore = "expensive ROCm op proptest sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
 
 
     #[test]
     fn test_log2(x in 1usize..100, y in 1usize..5, seed in any::<u64>()) {
         // log2(x) = ln(x) / ln(2)
         let gen_lambda = |n, s| random_f32_vec(n, s, 0.1, 0.6);
-        test_unary_cuda(x, |a| a.log2(), |a| (a.log().unwrap() / 2.0f64.ln()).unwrap(), gen_lambda, seed);
-        test_unary_cuda((y, x), |a| a.log2(), |a| (a.log().unwrap() / 2.0f64.ln()).unwrap(), gen_lambda, seed);
+        test_unary_rocm(x, |a| a.log2(), |a| (a.log().unwrap() / 2.0f64.ln()).unwrap(), gen_lambda, seed);
+        test_unary_rocm((y, x), |a| a.log2(), |a| (a.log().unwrap() / 2.0f64.ln()).unwrap(), gen_lambda, seed);
     }
 
-    #[ignore = "expensive CUDA op proptest sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
+    #[ignore = "expensive ROCm op proptest sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
 
 
     #[test]
     fn test_sin(x in 1usize..100, y in 1usize..5, seed in any::<u64>()) {
         let gen_lambda = |n, s| random_f32_vec(n, s, -0.5, 0.5);
-        test_unary_cuda(x, |a| a.sin(), |a| a.sin().unwrap(), gen_lambda, seed);
-        test_unary_cuda((y, x), |a| a.sin(), |a| a.sin().unwrap(), gen_lambda, seed);
+        test_unary_rocm(x, |a| a.sin(), |a| a.sin().unwrap(), gen_lambda, seed);
+        test_unary_rocm((y, x), |a| a.sin(), |a| a.sin().unwrap(), gen_lambda, seed);
     }
 
-    #[ignore = "expensive CUDA op proptest sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
+    #[ignore = "expensive ROCm op proptest sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
 
 
     #[test]
     fn test_recip(x in 1usize..100, y in 1usize..5, seed in any::<u64>()) {
         let gen_lambda = |n, s| random_f32_vec(n, s, 0.1, 0.5);
-        test_unary_cuda(x, |a| a.reciprocal(), |a| a.recip().unwrap(), gen_lambda, seed);
-        test_unary_cuda((y, x), |a| a.reciprocal(), |a| a.recip().unwrap(), gen_lambda, seed);
+        test_unary_rocm(x, |a| a.reciprocal(), |a| a.recip().unwrap(), gen_lambda, seed);
+        test_unary_rocm((y, x), |a| a.reciprocal(), |a| a.recip().unwrap(), gen_lambda, seed);
     }
 
-    #[ignore = "expensive CUDA op proptest sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
+    #[ignore = "expensive ROCm op proptest sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
 
 
     #[test]
     fn test_sqrt(x in 1usize..100, y in 1usize..5, seed in any::<u64>()) {
         let gen_lambda = |n, s| random_f32_vec(n, s, 0.1, 0.6);
-        test_unary_cuda(x, |a| a.sqrt(), |a| a.sqrt().unwrap(), gen_lambda, seed);
-        test_unary_cuda((y, x), |a| a.sqrt(), |a| a.sqrt().unwrap(), gen_lambda, seed);
+        test_unary_rocm(x, |a| a.sqrt(), |a| a.sqrt().unwrap(), gen_lambda, seed);
+        test_unary_rocm((y, x), |a| a.sqrt(), |a| a.sqrt().unwrap(), gen_lambda, seed);
     }
 
     // Binary ops tests
-    #[ignore = "expensive CUDA op proptest sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
+    #[ignore = "expensive ROCm op proptest sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
 
     #[test]
     fn test_mod_op(x in 1usize..100, y in 1usize..5, seed in any::<u64>()) {
@@ -201,14 +201,14 @@ proptest! {
         test_mod((y, x), (y, x), |a, b| a % b, seed);
     }
 
-    #[ignore = "expensive CUDA op proptest sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
+    #[ignore = "expensive ROCm op proptest sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
 
 
     #[test]
     fn test_less_than(x in 1usize..100, y in 1usize..5, seed in any::<u64>()) {
         let gen_lambda = |n, s| random_f32_vec(n, s, -99.0, 100.0).into_iter().map(|v| v.floor()).collect();
-        test_binary_cuda(x, x, |a, b| a.lt(b).cast(luminal::dtype::DType::F32), |a, b| a.lt(&b).unwrap().to_dtype(candle_core::DType::F32).unwrap(), gen_lambda, gen_lambda, seed, 0.0, 0.0);
-        test_binary_cuda((y, x), (y, x), |a, b| a.lt(b).cast(luminal::dtype::DType::F32), |a, b| a.lt(&b).unwrap().to_dtype(candle_core::DType::F32).unwrap(), gen_lambda, gen_lambda, seed, 0.0, 0.0);
+        test_binary_rocm(x, x, |a, b| a.lt(b).cast(luminal::dtype::DType::F32), |a, b| a.lt(&b).unwrap().to_dtype(candle_core::DType::F32).unwrap(), gen_lambda, gen_lambda, seed, 0.0, 0.0);
+        test_binary_rocm((y, x), (y, x), |a, b| a.lt(b).cast(luminal::dtype::DType::F32), |a, b| a.lt(&b).unwrap().to_dtype(candle_core::DType::F32).unwrap(), gen_lambda, gen_lambda, seed, 0.0, 0.0);
     }
 }
 
@@ -358,7 +358,7 @@ pub fn test_cast_f16_edge_cases() {
     // Generator that ignores seed and returns edge cases
     let gen_edge_cases = |_n: usize, _seed: u64| edge_cases.clone();
 
-    test_unary_cuda(
+    test_unary_rocm(
         edge_cases.len(),
         |a| a.cast(DType::F16).cast(DType::F32),
         |a| {
@@ -376,7 +376,7 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(5))]
 
     /// Test F32 -> F16 -> F32 cast roundtrip with random values.
-    #[ignore = "expensive CUDA op proptest sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
+    #[ignore = "expensive ROCm op proptest sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
 
     #[test]
     fn test_cast_f16_random(size in 1usize..200, seed in any::<u64>()) {
@@ -386,7 +386,7 @@ proptest! {
         let f16_max = half::f16::MAX.to_f32();
         let gen_lambda = |n, s| random_f32_vec(n, s, -2.0 * f16_max, 2.0 * f16_max);
 
-        test_unary_cuda(
+        test_unary_rocm(
             size,
             |a| a.cast(DType::F16).cast(DType::F32),
             |a| {
@@ -405,16 +405,16 @@ proptest! {
 /// This tests the genetic algorithm search by validating each genome individually.
 /// Uses proptest seed for reproducibility - if this test fails, proptest will print the seed
 /// which can be used to reproduce the failure.
-fn fuzz_test_cuda_genomes_impl(seed: u64) {
+fn fuzz_test_rocm_genomes_impl(seed: u64) {
     use rand::SeedableRng;
     use rand::rngs::StdRng;
 
     let Some(stream) = get_rocm_stream() else {
-        println!("CUDA not available, skipping test");
+        println!("ROCm not available, skipping test");
         return;
     };
 
-    println!("Running fuzz_test_cuda_genomes with seed: {}", seed);
+    println!("Running fuzz_test_rocm_genomes with seed: {}", seed);
 
     // Build a graph with operations that have rewrite alternatives
     let mut cx = Graph::default();
@@ -440,7 +440,7 @@ fn fuzz_test_cuda_genomes_impl(seed: u64) {
         })
         .count();
     println!(
-        "CUDA search space: {} total eclasses, {} mutable",
+        "ROCm search space: {} total eclasses, {} mutable",
         egraph.eclasses.len(),
         mutable_eclasses
     );
@@ -571,17 +571,17 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(3))]
 
     // This walks random extraction genomes and is intentionally opt-in so the
-    // default CUDA unit suite keeps a tight feedback loop.
-    #[ignore = "expensive CUDA genome fuzzing; run with cargo test -p luminal_cuda_lite -- --ignored"]
+    // default ROCm unit suite keeps a tight feedback loop.
+    #[ignore = "expensive ROCm genome fuzzing; run with cargo test -p luminal_rocm_lite -- --ignored"]
     #[test]
-    fn fuzz_test_cuda_genomes(seed in any::<u64>()) {
-        fuzz_test_cuda_genomes_impl(seed);
+    fn fuzz_test_rocm_genomes(seed in any::<u64>()) {
+        fuzz_test_rocm_genomes_impl(seed);
     }
 }
 
 fn run_embed_test(vocab_size: usize, embed_dim: usize, seq_len: usize, seed: u64) {
     let Some(stream) = get_rocm_stream() else {
-        println!("CUDA not available, skipping test");
+        println!("ROCm not available, skipping test");
         return;
     };
 
@@ -640,7 +640,7 @@ fn run_embed_test(vocab_size: usize, embed_dim: usize, seq_len: usize, seed: u64
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(5))]
 
-    #[ignore = "expensive CUDA op proptest sweep; run with cargo test -p luminal_cuda_lite -- --ignored"]
+    #[ignore = "expensive ROCm op proptest sweep; run with cargo test -p luminal_rocm_lite -- --ignored"]
 
 
     #[test]

@@ -1,7 +1,7 @@
 // =========================================================================
-// Generic CUDA elementwise ops used inside FusionStart/FusionEnd regions.
+// Generic HIP elementwise ops used inside FusionStart/FusionEnd regions.
 //
-// CUDA elementwise execution is represented as a FusionEnd-rooted region even
+// HIP elementwise execution is represented as a FusionEnd-rooted region even
 // for a single op. These ops are therefore region-internal only; standalone
 // compilation is intentionally unsupported.
 // =========================================================================
@@ -85,7 +85,7 @@ impl EgglogOp for RocmUnaryElementwise {
                     (let ?fe (Op (FusionEnd ?shape ?out_s ?dt) (ICons ?elem (INil))))
                     (union ?u ?fe)
                     (set (dtype ?fe) ?dt)
-                 ) :ruleset kernel_lower :name \"cuda-elem-singleton-{hlir}\")"
+                 ) :ruleset kernel_lower :name \"rocm-elem-singleton-{hlir}\")"
             )));
         }
 
@@ -115,11 +115,11 @@ impl EgglogOp for RocmUnaryElementwise {
 
         rules.push(Rule::raw(
             "(datatype*
-                (CudaSigmoidScaledState
-                    (MkCudaSigmoidScaledState IR EList EList DType)
+                (RocmSigmoidScaledState
+                    (MkRocmSigmoidScaledState IR EList EList DType)
                 )
             )
-            (function cuda_sigmoid_scaled (IR) CudaSigmoidScaledState :merge new)
+            (function rocm_sigmoid_scaled (IR) RocmSigmoidScaledState :merge new)
 
             (rule
             (
@@ -134,8 +134,8 @@ impl EgglogOp for RocmUnaryElementwise {
                 (= ?dt (dtype ?x))
             )
             (
-                (set (cuda_sigmoid_scaled ?scaled)
-                    (MkCudaSigmoidScaledState ?x ?shape ?x_stride ?dt))
+                (set (rocm_sigmoid_scaled ?scaled)
+                    (MkRocmSigmoidScaledState ?x ?shape ?x_stride ?dt))
             )
             :ruleset direct_kernel
             :name \"direct-sigmoid-scaled-region-marker\"
@@ -143,8 +143,8 @@ impl EgglogOp for RocmUnaryElementwise {
 
             (rule
             (
-                (= ?scaled_state (cuda_sigmoid_scaled ?scaled))
-                (= ?scaled_state (MkCudaSigmoidScaledState ?x ?shape ?x_stride ?dt))
+                (= ?scaled_state (rocm_sigmoid_scaled ?scaled))
+                (= ?scaled_state (MkRocmSigmoidScaledState ?x ?shape ?x_stride ?dt))
                 (= ?exp2 (Op (Exp2 ?shape ?scaled_stride ?exp_stride) (ICons ?scaled (INil))))
                 (= ?one (Op (Constant ?ov) (INil)))
                 (> ?ov 0.99)
@@ -277,7 +277,7 @@ impl EgglogOp for RocmBinaryElementwise {
                     (let ?fe (Op (FusionEnd ?shape ?out_s ?dt) (ICons ?elem (INil))))
                     (union ?bin ?fe)
                     (set (dtype ?fe) ?dt)
-                 ) :ruleset kernel_lower :name \"cuda-elem-singleton-Add\")",
+                 ) :ruleset kernel_lower :name \"rocm-elem-singleton-Add\")",
             ),
             Rule::raw(
                 "(rule (
@@ -291,7 +291,7 @@ impl EgglogOp for RocmBinaryElementwise {
                     (let ?fe (Op (FusionEnd ?shape ?out_s ?dt) (ICons ?elem (INil))))
                     (union ?bin ?fe)
                     (set (dtype ?fe) ?dt)
-                 ) :ruleset kernel_lower :name \"cuda-elem-singleton-Mul\")",
+                 ) :ruleset kernel_lower :name \"rocm-elem-singleton-Mul\")",
             ),
         ]
     }

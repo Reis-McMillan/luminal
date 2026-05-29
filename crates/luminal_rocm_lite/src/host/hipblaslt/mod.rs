@@ -443,7 +443,7 @@ impl EgglogOp for HipblasLtScaled {
     }
 }
 
-/// Convert DType to CUDA matrix/scale type for cuBLAS LT.
+/// Convert DType to HIP matrix/scale type for hipBLASLt.
 fn dtype_to_rocm_dtype(dtype: DType) -> hipDataType {
     match dtype {
         DType::F64 => hipDataType::HIP_R_64F,
@@ -1220,7 +1220,7 @@ impl HostOp for HipblasLt {
         let stride_c = resolve(&self.stride_c).exec(dyn_map).unwrap() as i64;
         let stride_d = resolve(&self.stride_d).exec(dyn_map).unwrap() as i64;
 
-        // Get CUDA types based on the explicit hipblasLt type tuple.
+        // Get HIP types based on the explicit hipblasLt type tuple.
         let a_rocm_dtype = dtype_to_rocm_dtype(self.a_dtype);
         let b_rocm_dtype = dtype_to_rocm_dtype(self.b_dtype);
         let c_rocm_dtype = dtype_to_rocm_dtype(self.c_dtype);
@@ -1331,7 +1331,7 @@ impl HostOp for HipblasLt {
 
         run_hipblaslt_matmul(stream, &hipblas_lt, &spec, ptrs)?;
 
-        // No stream.synchronize() here — CUDA stream ordering guarantees
+        // No stream.synchronize() here — HIP stream ordering guarantees
         // sequential execution. The runtime syncs once at the end of execute().
         Ok(())
     }

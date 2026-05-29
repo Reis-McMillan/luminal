@@ -138,7 +138,7 @@ impl EgglogOp for KernelConv2D {
                         (set (dtype ?conv) (F32))
                     )
                     :ruleset kernel_lower
-                    :name \"kernel conv2d 1x1 from cuda lowered matmul bias\"
+                    :name \"kernel conv2d 1x1 from rocm lowered matmul bias\"
                 )",
             ),
             Rule::raw(
@@ -194,10 +194,10 @@ impl EgglogOp for KernelConv2D {
                         (set (dtype ?conv) (F32))
                     )
                     :ruleset kernel_lower
-                    :name \"kernel conv2d 1x1 from cuda lowered bias matmul\"
+                    :name \"kernel conv2d 1x1 from rocm lowered bias matmul\"
                 )",
             ),
-            // Match the same conv after generic CUDA lowering has normalized
+            // Match the same conv after generic ROCm lowering has normalized
             // the elementwise pieces into fusion regions:
             //
             //   KernelGather(input windows)
@@ -205,13 +205,13 @@ impl EgglogOp for KernelConv2D {
             //     -> KernelSum(reduce K)
             //     -> RocmBinaryElementwise("Add", bias)
             //
-            // This is the form that survives long enough for CUDA search in
+            // This is the form that survives long enough for ROCm search in
             // real models. The KernelConv2D op consumes the pre-gather input
             // and avoids materializing both the im2col window tensor and the
             // elementwise product tensor.
             //
             // TODO(egglog-shapes): the current e-graph does not reliably prove
-            // the derived arithmetic equalities for this chain after CUDA
+            // the derived arithmetic equalities for this chain after ROCm
             // normalization:
             //   * `M == H_out * W_out`
             //   * `K == C_in * KH * KW`
@@ -278,7 +278,7 @@ impl EgglogOp for KernelConv2D {
                         (set (dtype ?conv) (F32))
                     )
                     :ruleset kernel_lower
-                    :name \"kernel conv2d from cuda lowered unfold matmul bias\"
+                    :name \"kernel conv2d from rocm lowered unfold matmul bias\"
                 )",
             ),
             Rule::raw(
@@ -335,7 +335,7 @@ impl EgglogOp for KernelConv2D {
                         (set (dtype ?conv) (F32))
                     )
                     :ruleset kernel_lower
-                    :name \"kernel conv2d from cuda lowered bias unfold matmul\"
+                    :name \"kernel conv2d from rocm lowered bias unfold matmul\"
                 )",
             ),
             // Match the im2col-style HLIR conv used by Flux2:

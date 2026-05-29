@@ -113,7 +113,7 @@ impl KernelOp for Matmul2DKernel {
             DType::Bf16 => (
                 "const __nv_bfloat16* __restrict__ B",
                 format!("__bfloat162float(B[{b_index_expr}])"),
-                "#include <cuda_bf16.h>\n",
+                "#include <hip/hip_bf16.h>\n",
             ),
             other => panic!("Matmul2DKernel: unsupported weight_dtype {other:?}"),
         };

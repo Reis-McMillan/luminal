@@ -30,13 +30,13 @@ pub fn dtype_includes(dtypes: &[DType]) -> String {
     let needs_fp4 = dtypes.iter().any(|d| matches!(d, DType::F4E2M1));
     let mut s = String::new();
     if needs_fp16 {
-        s.push_str("#include <cuda_fp16.h>\n");
+        s.push_str("#include <hip/hip_fp16.h>\n");
     }
     if needs_bf16 {
-        s.push_str("#include <cuda_bf16.h>\n");
+        s.push_str("#include <hip/hip_bf16.h>\n");
     }
     if needs_fp8 {
-        s.push_str("#include <cuda_fp8.h>\n");
+        s.push_str("#include <hip/hip_fp8.h>\n");
     }
     if needs_fp6 {
         s.push_str("#include <cuda_fp6.h>\n");

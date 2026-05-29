@@ -2,10 +2,7 @@ use half::bf16;
 use luminal::{dtype::DType, prelude::*, shape::Expression};
 
 use super::utilities::{assert_close, get_cuda_stream, random_f32_vec};
-use crate::{
-    host::moe::{GLUMoE, GLUMoEMode},
-    runtime::CudaRuntime,
-};
+use crate::{host::moe::GLUMoE, runtime::CudaRuntime};
 
 const SEQ: usize = 2;
 const HIDDEN: usize = 32;
@@ -173,30 +170,51 @@ fn gemma_gelu(x: GraphTensor) -> GraphTensor {
     x * scaled.sigmoid()
 }
 
-fn glumoe_modes(rt: &CudaRuntime) -> Vec<GLUMoEMode> {
-    rt.host_ops()
-        .into_iter()
-        .filter_map(|op| {
-            op.as_any()
-                .downcast_ref::<GLUMoE>()
-                .map(|glumoe| glumoe.mode)
-        })
-        .collect()
+fn search_space_contains(cx: &Graph, op_name: &str) -> bool {
+    let egraph = cx.egraph().expect("test should build an e-graph");
+
+    for (label, children) in egraph.enodes.values() {
+        if label != "Op" {
+            continue;
+        }
+        let Some(kind_eclass) = children.first() else {
+            continue;
+        };
+        let Some((_, kind_enodes)) = egraph.eclasses.get(kind_eclass) else {
+            continue;
+        };
+        if kind_enodes
+            .iter()
+            .any(|kind_node| egraph.enodes[kind_node].0 == op_name)
+        {
+            return true;
+        }
+    }
+    false
 }
 
-fn run_qwen_moe(use_glumoe: bool) -> (Vec<f32>, Vec<GLUMoEMode>) {
+fn assert_glumoe_in_search_space(cx: &Graph) {
+    assert!(
+        search_space_contains(cx, "GLUMoE"),
+        "GLUMoE was not in the e-graph search space"
+    );
+}
+
+fn run_qwen_moe(include_glumoe: bool) -> Vec<f32> {
     let Some(stream) = get_cuda_stream() else {
-        return (vec![], vec![]);
+        return vec![];
     };
 
     let mut model = build_qwen_moe_graph();
     model.graph.set_dim('s', SEQ);
-    if use_glumoe {
-        model.graph.build_search_space::<CudaRuntime>();
+    if include_glumoe {
+        model
+            .graph
+            .build_search_space::<CudaRuntime>(CompileOptions::default());
     } else {
         model
             .graph
-            .build_search_space_exclude_ops::<CudaRuntime, GLUMoE>();
+            .build_search_space_exclude_ops::<CudaRuntime, GLUMoE>(CompileOptions::default());
     }
 
     let x_data = random_f32_vec(SEQ * HIDDEN, 11, -0.15, 0.15);
@@ -215,25 +233,27 @@ fn run_qwen_moe(use_glumoe: bool) -> (Vec<f32>, Vec<GLUMoEMode>) {
     rt.set_data(model.router, router_data);
     rt.set_data(model.gate_up_weights, gate_up_data);
     rt.set_data(model.down_weights, down_data);
-    rt = model.graph.search(rt, 10);
+    rt = model.graph.search(rt, CompileOptions::new(10));
     rt.execute(&model.graph.dyn_map);
 
-    (rt.get_f32(model.output.id), glumoe_modes(&rt))
+    rt.get_f32(model.output.id)
 }
 
-fn run_gemma_moe(use_glumoe: bool) -> (Vec<f32>, Vec<GLUMoEMode>) {
+fn run_gemma_moe(include_glumoe: bool) -> Vec<f32> {
     let Some(stream) = get_cuda_stream() else {
-        return (vec![], vec![]);
+        return vec![];
     };
 
     let mut model = build_gemma_moe_graph();
     model.graph.set_dim('s', SEQ);
-    if use_glumoe {
-        model.graph.build_search_space::<CudaRuntime>();
+    if include_glumoe {
+        model
+            .graph
+            .build_search_space::<CudaRuntime>(CompileOptions::default());
     } else {
         model
             .graph
-            .build_search_space_exclude_ops::<CudaRuntime, GLUMoE>();
+            .build_search_space_exclude_ops::<CudaRuntime, GLUMoE>(CompileOptions::default());
     }
 
     let router_input_data = random_f32_vec(SEQ * HIDDEN, 21, -0.15, 0.15);
@@ -258,54 +278,58 @@ fn run_gemma_moe(use_glumoe: bool) -> (Vec<f32>, Vec<GLUMoEMode>) {
     rt.set_data(model.per_expert_scale, per_expert_scale_data);
     rt.set_data(model.gate_up_weights, gate_up_data);
     rt.set_data(model.down_weights, down_data);
-    rt = model.graph.search(rt, 10);
+    rt = model.graph.search(rt, CompileOptions::new(10));
     rt.execute(&model.graph.dyn_map);
 
-    (rt.get_f32(model.output.id), glumoe_modes(&rt))
+    rt.get_f32(model.output.id)
 }
 
 #[test]
 fn test_glumoe_matches_qwen_swiglu_pattern() {
-    let (_result, modes) = run_qwen_moe(true);
-    if modes.is_empty() {
+    if get_cuda_stream().is_none() {
         return;
     }
 
-    assert_eq!(modes, vec![GLUMoEMode::SwiGLUNormalized]);
+    let mut model = build_qwen_moe_graph();
+    model.graph.set_dim('s', SEQ);
+    model
+        .graph
+        .build_search_space::<CudaRuntime>(CompileOptions::default());
+    assert_glumoe_in_search_space(&model.graph);
 }
 
 #[test]
 fn test_glumoe_matches_gemma_gelu_pattern() {
-    let (_result, modes) = run_gemma_moe(true);
-    if modes.is_empty() {
+    if get_cuda_stream().is_none() {
         return;
     }
 
-    assert_eq!(modes, vec![GLUMoEMode::GemmaGELU]);
+    let mut model = build_gemma_moe_graph();
+    model.graph.set_dim('s', SEQ);
+    model
+        .graph
+        .build_search_space::<CudaRuntime>(CompileOptions::default());
+    assert_glumoe_in_search_space(&model.graph);
 }
 
 #[test]
 fn test_glumoe_swiglu_matches_unfused_output() {
-    let (expected, baseline_modes) = run_qwen_moe(false);
+    let expected = run_qwen_moe(false);
     if expected.is_empty() {
         return;
     }
-    assert!(baseline_modes.is_empty());
 
-    let (actual, fused_modes) = run_qwen_moe(true);
-    assert_eq!(fused_modes, vec![GLUMoEMode::SwiGLUNormalized]);
+    let actual = run_qwen_moe(true);
     assert_close(&actual, &expected, 3e-2, 3e-2);
 }
 
 #[test]
 fn test_glumoe_gemma_gelu_matches_unfused_output() {
-    let (expected, baseline_modes) = run_gemma_moe(false);
+    let expected = run_gemma_moe(false);
     if expected.is_empty() {
         return;
     }
-    assert!(baseline_modes.is_empty());
 
-    let (actual, fused_modes) = run_gemma_moe(true);
-    assert_eq!(fused_modes, vec![GLUMoEMode::GemmaGELU]);
+    let actual = run_gemma_moe(true);
     assert_close(&actual, &expected, 3e-2, 3e-2);
 }

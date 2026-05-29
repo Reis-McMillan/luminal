@@ -113,10 +113,6 @@ impl QwenRuntime for luminal_metal::MetalRuntime {
     fn get_f32(&self, id: NodeIndex) -> Vec<f32> {
         luminal_metal::MetalRuntime::get_f32(self, id)
     }
-
-    fn prepare_execute(&mut self, dyn_map: &FxHashMap<char, usize>) {
-        luminal_metal::MetalRuntime::allocate_intermediate_buffers(self, dyn_map);
-    }
 }
 
 pub fn run_qwen<R>(mut runtime: R, config: QwenRunConfig) -> Result<(), Box<dyn Error>>
@@ -151,9 +147,31 @@ where
         k_out.output();
         v_out.output();
     }
+    let max_prefill = (prompt_tokens.len() + 16)
+        .next_power_of_two()
+        .min(config.max_seq_len);
+    let search_s = 16.min(max_prefill).max(2);
+    let mut compile_options = CompileOptions::default().dim_buckets(
+        's',
+        &[
+            DimBucket::new(1, 1),
+            DimBucket::new(2, max_prefill).representative(search_s),
+        ],
+    );
+    let max_decode_p = config.max_seq_len.saturating_sub(1);
+    let decode_p_representative = prompt_tokens.len().min(max_decode_p).max(1);
+    let p_buckets = if max_decode_p == 0 {
+        vec![DimBucket::new(0, 0)]
+    } else {
+        vec![
+            DimBucket::new(0, 0),
+            DimBucket::new(1, max_decode_p).representative(decode_p_representative),
+        ]
+    };
+    compile_options = compile_options.dim_buckets('p', &p_buckets);
 
     println!("Building E-Graph...");
-    cx.build_search_space::<R>();
+    cx.build_search_space::<R>(compile_options);
 
     println!("Loading weights...");
     let weights_path = model_dir.join("model_combined.safetensors");
@@ -166,22 +184,11 @@ where
     }
 
     println!("Compiling...");
-    let max_prefill = (prompt_tokens.len() + 16)
-        .next_power_of_two()
-        .min(config.max_seq_len);
-    let search_s = 16.min(max_prefill).max(2);
-    cx.set_dim_buckets(
-        's',
-        &[
-            DimBucket::new(1, 1),
-            DimBucket::new(2, max_prefill).representative(search_s),
-        ],
-    );
     cx.set_dim('s', search_s);
     cx.set_dim('p', 0);
     runtime.set_i32_data(input.id, vec![1; search_s]);
     runtime.set_i32_data(token_ids.id, (0..search_s as i32).collect::<Vec<_>>());
-    runtime = cx.search(runtime, config.search_graphs);
+    runtime = cx.search(runtime, CompileOptions::new(config.search_graphs));
 
     for i in 0..config.layers {
         runtime.set_zeros(kv_cache.k_caches[i].id, cache_bytes);

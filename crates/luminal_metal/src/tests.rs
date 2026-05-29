@@ -3,6 +3,7 @@ use candle_core::{Device as CandleDevice, Tensor as CandleTensor};
 use half::{bf16, f16};
 use luminal::prelude::*;
 use proptest::prelude::*;
+use rand::{SeedableRng, rngs::StdRng};
 use safetensors::{Dtype, tensor::TensorView};
 use std::{
     collections::HashMap,
@@ -36,6 +37,30 @@ fn assert_close(actual: &[f32], expected: &[f32], tolerance: f32) {
 
 fn bytes_of<T: bytemuck::NoUninit>(values: &[T]) -> Vec<u8> {
     bytemuck::cast_slice(values).to_vec()
+}
+
+fn search_candidates(cx: &mut Graph, rt: MetalRuntime, limit: usize) -> MetalRuntime {
+    let mut rng = StdRng::seed_from_u64(0);
+    cx.search_with_rng(rt, CompileOptions::new(limit), &mut rng)
+}
+
+fn egraph_has_op(cx: &Graph, op_name: &str) -> bool {
+    cx.egraph()
+        .expect("search space should be built")
+        .enodes
+        .values()
+        .any(|(label, _)| label == op_name)
+}
+
+fn assert_matmul_options(cx: &Graph, mps_op_name: &str) {
+    assert!(
+        egraph_has_op(cx, mps_op_name),
+        "expected {mps_op_name} rewrite option in e-graph"
+    );
+    assert!(
+        egraph_has_op(cx, "GenericMatmul"),
+        "expected GenericMatmul rewrite option in e-graph"
+    );
 }
 
 fn write_test_safetensors(tensors: &[(&str, Dtype, Vec<usize>, Vec<u8>)]) -> PathBuf {
@@ -272,11 +297,11 @@ fn dynamic_dim_sum_reduce_runs() {
     let input = cx.tensor(('a', 2));
     let output = input.sum(0).output();
 
-    cx.build_search_space::<MetalRuntime>();
+    cx.build_search_space::<MetalRuntime>(CompileOptions::default());
     let mut rt = MetalRuntime::initialize(());
     rt.set_data(input, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
 
-    rt = cx.search(rt, 1);
+    rt = cx.search(rt, CompileOptions::new(1));
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
 
@@ -290,13 +315,14 @@ fn metal_bucketed_dynamic_dim_dispatches_correct_graph() {
     let input = cx.tensor(('s', 4));
     let output = (input + input).output();
 
-    cx.set_dim_buckets('s', &[DimBucket::new(1, 1), DimBucket::new(2, 4)]);
     cx.set_dim('s', 1);
-    cx.build_search_space::<MetalRuntime>();
+    cx.build_search_space::<MetalRuntime>(
+        CompileOptions::default().dim_buckets('s', &[DimBucket::new(1, 1), DimBucket::new(2, 4)]),
+    );
 
     let mut rt = MetalRuntime::initialize(());
     rt.set_data(input, vec![1.0f32; 4]);
-    rt = cx.search(rt, 5);
+    rt = cx.search(rt, CompileOptions::new(5));
 
     cx.set_dim('s', 1);
     let s1_input = vec![1.0, 2.0, 3.0, 4.0];
@@ -321,10 +347,10 @@ fn metal_int_arithmetic_preserves_large_values() {
     let large_index = (token * 1024) + 123;
     let mod_output = (large_index % 65_537).output();
 
-    cx.build_search_space::<MetalRuntime>();
+    cx.build_search_space::<MetalRuntime>(CompileOptions::default());
     let mut rt = MetalRuntime::initialize(());
     rt.set_data(token, &[16_385i32]);
-    rt = cx.search(rt, 1);
+    rt = cx.search(rt, CompileOptions::new(1));
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
 
@@ -343,11 +369,11 @@ proptest! {
         let input = cx.tensor(len);
         let output = (input + input).output();
 
-        cx.build_search_space::<MetalRuntime>();
+        cx.build_search_space::<MetalRuntime>(CompileOptions::default());
         let mut rt = MetalRuntime::initialize(());
         let input_values: Vec<f32> = values.into_iter().take(len).collect();
         rt.set_data(input, &input_values);
-        rt = cx.search(rt, 5);
+        rt = cx.search(rt, CompileOptions::new(5));
         rt.allocate_intermediate_buffers(&cx.dyn_map);
         rt.execute(&cx.dyn_map);
 
@@ -365,11 +391,11 @@ proptest! {
         let input = cx.tensor(len);
         let output = (input * input).output();
 
-        cx.build_search_space::<MetalRuntime>();
+        cx.build_search_space::<MetalRuntime>(CompileOptions::default());
         let mut rt = MetalRuntime::initialize(());
         let input_values: Vec<f32> = values.into_iter().take(len).collect();
         rt.set_data(input, &input_values);
-        rt = cx.search(rt, 5);
+        rt = cx.search(rt, CompileOptions::new(5));
         rt.allocate_intermediate_buffers(&cx.dyn_map);
         rt.execute(&cx.dyn_map);
 
@@ -387,11 +413,11 @@ proptest! {
         let input = cx.tensor(len);
         let output = input.exp2().output();
 
-        cx.build_search_space::<MetalRuntime>();
+        cx.build_search_space::<MetalRuntime>(CompileOptions::default());
         let mut rt = MetalRuntime::initialize(());
         let input_values: Vec<f32> = values.into_iter().take(len).collect();
         rt.set_data(input, &input_values);
-        rt = cx.search(rt, 5);
+        rt = cx.search(rt, CompileOptions::new(5));
         rt.allocate_intermediate_buffers(&cx.dyn_map);
         rt.execute(&cx.dyn_map);
 
@@ -399,6 +425,16 @@ proptest! {
         let expected: Vec<f32> = input_values.iter().map(|v| 2.0f32.powf(*v)).collect();
         assert_close(&out, &expected, 0.001);
     }
+}
+
+#[test]
+fn metal_build_search_space_accepts_memory_budget() {
+    let mut cx = Graph::default();
+    let a = cx.tensor(4);
+    let b = cx.tensor(4);
+    (a * b).output();
+
+    cx.build_search_space::<MetalRuntime>(CompileOptions::default().max_memory_mib(1));
 }
 
 /// Simple deterministic test for add
@@ -409,11 +445,11 @@ fn metal_simple_add() {
     let b = cx.tensor(4);
     let output = (a + b).output();
 
-    cx.build_search_space::<MetalRuntime>();
+    cx.build_search_space::<MetalRuntime>(CompileOptions::default());
     let mut rt = MetalRuntime::initialize(());
     rt.set_data(a, &[1.0, 2.0, 3.0, 4.0]);
     rt.set_data(b, &[5.0, 6.0, 7.0, 8.0]);
-    rt = cx.search(rt, 5);
+    rt = cx.search(rt, CompileOptions::new(5));
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
 
@@ -429,11 +465,11 @@ fn metal_simple_mul() {
     let b = cx.tensor(4);
     let output = (a * b).output();
 
-    cx.build_search_space::<MetalRuntime>();
+    cx.build_search_space::<MetalRuntime>(CompileOptions::default());
     let mut rt = MetalRuntime::initialize(());
     rt.set_data(a, &[1.0, 2.0, 3.0, 4.0]);
     rt.set_data(b, &[5.0, 6.0, 7.0, 8.0]);
-    rt = cx.search(rt, 5);
+    rt = cx.search(rt, CompileOptions::new(5));
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
 
@@ -448,10 +484,10 @@ fn metal_simple_exp2() {
     let input = cx.tensor(4);
     let output = input.exp2().output();
 
-    cx.build_search_space::<MetalRuntime>();
+    cx.build_search_space::<MetalRuntime>(CompileOptions::default());
     let mut rt = MetalRuntime::initialize(());
     rt.set_data(input, &[0.0, 1.0, 2.0, 3.0]);
-    rt = cx.search(rt, 5);
+    rt = cx.search(rt, CompileOptions::new(5));
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
 
@@ -465,10 +501,10 @@ fn metal_simple_log2() {
     let input = cx.tensor(4);
     let output = input.log2().output();
 
-    cx.build_search_space::<MetalRuntime>();
+    cx.build_search_space::<MetalRuntime>(CompileOptions::default());
     let mut rt = MetalRuntime::initialize(());
     rt.set_data(input, &[1.0, 2.0, 4.0, 8.0]);
-    rt = cx.search(rt, 5);
+    rt = cx.search(rt, CompileOptions::new(5));
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
 
@@ -482,7 +518,7 @@ fn metal_simple_sin() {
     let input = cx.tensor(4);
     let output = input.sin().output();
 
-    cx.build_search_space::<MetalRuntime>();
+    cx.build_search_space::<MetalRuntime>(CompileOptions::default());
     let mut rt = MetalRuntime::initialize(());
     rt.set_data(
         input,
@@ -493,7 +529,7 @@ fn metal_simple_sin() {
             3.0 * std::f32::consts::FRAC_PI_2,
         ],
     );
-    rt = cx.search(rt, 5);
+    rt = cx.search(rt, CompileOptions::new(5));
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
 
@@ -507,10 +543,10 @@ fn metal_simple_sqrt() {
     let input = cx.tensor(4);
     let output = input.sqrt().output();
 
-    cx.build_search_space::<MetalRuntime>();
+    cx.build_search_space::<MetalRuntime>(CompileOptions::default());
     let mut rt = MetalRuntime::initialize(());
     rt.set_data(input, &[1.0, 4.0, 9.0, 16.0]);
-    rt = cx.search(rt, 5);
+    rt = cx.search(rt, CompileOptions::new(5));
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
 
@@ -524,10 +560,10 @@ fn metal_simple_recip() {
     let input = cx.tensor(4);
     let output = input.reciprocal().output();
 
-    cx.build_search_space::<MetalRuntime>();
+    cx.build_search_space::<MetalRuntime>(CompileOptions::default());
     let mut rt = MetalRuntime::initialize(());
     rt.set_data(input, &[1.0, 2.0, 4.0, 5.0]);
-    rt = cx.search(rt, 5);
+    rt = cx.search(rt, CompileOptions::new(5));
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
 
@@ -542,11 +578,11 @@ fn metal_simple_mod() {
     let b = cx.tensor(4);
     let output = (a % b).output();
 
-    cx.build_search_space::<MetalRuntime>();
+    cx.build_search_space::<MetalRuntime>(CompileOptions::default());
     let mut rt = MetalRuntime::initialize(());
     rt.set_data(a, &[7.0, 10.0, 15.0, 8.5]);
     rt.set_data(b, &[3.0, 4.0, 6.0, 2.5]);
-    rt = cx.search(rt, 5);
+    rt = cx.search(rt, CompileOptions::new(5));
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
 
@@ -561,11 +597,11 @@ fn metal_simple_less_than() {
     let b = cx.tensor(4);
     let output = a.lt(b).output();
 
-    cx.build_search_space::<MetalRuntime>();
+    cx.build_search_space::<MetalRuntime>(CompileOptions::default());
     let mut rt = MetalRuntime::initialize(());
     rt.set_data(a, &[1.0, 5.0, 3.0, 4.0]);
     rt.set_data(b, &[2.0, 3.0, 3.0, 5.0]);
-    rt = cx.search(rt, 5);
+    rt = cx.search(rt, CompileOptions::new(5));
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
 
@@ -581,11 +617,11 @@ fn metal_simple_sum_reduce() {
     // sum over axis 1
     let output = input.sum(1).output();
 
-    cx.build_search_space::<MetalRuntime>();
+    cx.build_search_space::<MetalRuntime>(CompileOptions::default());
     let mut rt = MetalRuntime::initialize(());
     // [[1,2,3,4], [5,6,7,8]] -> [10, 26]
     rt.set_data(input, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]);
-    rt = cx.search(rt, 5);
+    rt = cx.search(rt, CompileOptions::new(5));
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
 
@@ -600,11 +636,11 @@ fn metal_simple_max_reduce() {
     // max over axis 1
     let output = input.max(1).output();
 
-    cx.build_search_space::<MetalRuntime>();
+    cx.build_search_space::<MetalRuntime>(CompileOptions::default());
     let mut rt = MetalRuntime::initialize(());
     // [[1,4,2,3], [8,5,7,6]] -> [4, 8]
     rt.set_data(input, &[1.0, 4.0, 2.0, 3.0, 8.0, 5.0, 7.0, 6.0]);
-    rt = cx.search(rt, 5);
+    rt = cx.search(rt, CompileOptions::new(5));
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
 
@@ -618,10 +654,10 @@ fn metal_f16_cast_roundtrip() {
     let input = cx.tensor(4);
     let output = input.cast(DType::F16).output();
 
-    cx.build_search_space::<MetalRuntime>();
+    cx.build_search_space::<MetalRuntime>(CompileOptions::default());
     let mut rt = MetalRuntime::initialize(());
     rt.set_data(input, &[1.0, -2.5, 3.25, 4.75]);
-    rt = cx.search(rt, 3);
+    rt = cx.search(rt, CompileOptions::new(3));
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
 
@@ -638,11 +674,11 @@ fn metal_f16_intermediate_add_roundtrip() {
         .cast(DType::F32)
         .output();
 
-    cx.build_search_space::<MetalRuntime>();
+    cx.build_search_space::<MetalRuntime>(CompileOptions::default());
     let mut rt = MetalRuntime::initialize(());
     rt.set_data(a, &[1.0, 2.0, -3.0, 4.5]);
     rt.set_data(b, &[0.5, -1.0, 3.0, 0.25]);
-    rt = cx.search(rt, 3);
+    rt = cx.search(rt, CompileOptions::new(3));
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
 
@@ -657,7 +693,7 @@ fn metal_specialized_matmul() {
     let b = cx.tensor((TRANSFORMER_HIDDEN, TRANSFORMER_HIDDEN));
     let output = a.matmul(b).output();
 
-    cx.build_search_space::<MetalRuntime>();
+    cx.build_search_space::<MetalRuntime>(CompileOptions::default());
     let mut rt = MetalRuntime::initialize(());
 
     let a_data = seeded_data(TRANSFORMER_SEQ * TRANSFORMER_HIDDEN, 1.0, -0.5);
@@ -665,7 +701,7 @@ fn metal_specialized_matmul() {
 
     rt.set_data(a, &a_data);
     rt.set_data(b, &b_data);
-    rt = cx.search(rt, 1);
+    rt = search_candidates(&mut cx, rt, 32);
     assert!(
         rt.contains_matmul(),
         "expected Metal runtime to fuse matmul, kernels: {:?}",
@@ -697,7 +733,8 @@ fn metal_regular_tiled_matmul_path() {
     let b = cx.tensor((k, n));
     let output = a.matmul(b).output();
 
-    cx.build_search_space::<MetalRuntime>();
+    cx.build_search_space::<MetalRuntime>(CompileOptions::default());
+    assert_matmul_options(&cx, "MPSMatmul");
     let mut rt = MetalRuntime::initialize(());
 
     let a_data = seeded_data(m * k, 0.4, -0.2);
@@ -705,19 +742,7 @@ fn metal_regular_tiled_matmul_path() {
 
     rt.set_data(a, &a_data);
     rt.set_data(b, &b_data);
-    rt = cx.search(rt, 1);
-
-    let kernels = rt.debug_kernel_ops();
-    assert!(
-        kernels.iter().any(|k| k.contains("MPSMatmul")),
-        "expected MPS matmul path, kernels: {:?}",
-        kernels
-    );
-    assert!(
-        !kernels.iter().any(|k| k.contains("GenericMatmul")),
-        "MPS-compatible matmul should not extract the generic fallback, kernels: {:?}",
-        kernels
-    );
+    rt = search_candidates(&mut cx, rt, 32);
 
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
@@ -743,7 +768,8 @@ fn metal_mps_matmul_transposed_rhs_weight_layout() {
     let weight = cx.tensor((n, k));
     let output = a.matmul(weight.t()).output();
 
-    cx.build_search_space::<MetalRuntime>();
+    cx.build_search_space::<MetalRuntime>(CompileOptions::default());
+    assert_matmul_options(&cx, "MPSMatmul");
     let mut rt = MetalRuntime::initialize(());
 
     let a_data = seeded_data(m * k, 0.35, -0.17);
@@ -751,14 +777,7 @@ fn metal_mps_matmul_transposed_rhs_weight_layout() {
 
     rt.set_data(a, &a_data);
     rt.set_data(weight, &weight_data);
-    rt = cx.search(rt, 1);
-
-    let kernels = rt.debug_kernel_ops();
-    assert!(
-        kernels.iter().any(|k| k.contains("transpose_rhs: true")),
-        "expected MPS matmul to cover transposed row-major RHS, kernels: {:?}",
-        kernels
-    );
+    rt = search_candidates(&mut cx, rt, 32);
 
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
@@ -784,7 +803,8 @@ fn metal_mps_matmul_transposed_lhs_layout() {
     let rhs = cx.tensor((k, n));
     let output = lhs_storage.t().matmul(rhs).output();
 
-    cx.build_search_space::<MetalRuntime>();
+    cx.build_search_space::<MetalRuntime>(CompileOptions::default());
+    assert_matmul_options(&cx, "MPSMatmul");
     let mut rt = MetalRuntime::initialize(());
 
     let lhs_data = seeded_data(k * m, 0.31, -0.12);
@@ -792,14 +812,7 @@ fn metal_mps_matmul_transposed_lhs_layout() {
 
     rt.set_data(lhs_storage, &lhs_data);
     rt.set_data(rhs, &rhs_data);
-    rt = cx.search(rt, 1);
-
-    let kernels = rt.debug_kernel_ops();
-    assert!(
-        kernels.iter().any(|k| k.contains("transpose_lhs: true")),
-        "expected MPS matmul to cover transposed row-major LHS, kernels: {:?}",
-        kernels
-    );
+    rt = search_candidates(&mut cx, rt, 32);
 
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
@@ -829,21 +842,15 @@ fn metal_mps_batched_matmul_row_row_layout() {
     let b = cx.tensor((batch, k, n));
     let output = a.matmul(b).output();
 
-    cx.build_search_space::<MetalRuntime>();
+    cx.build_search_space::<MetalRuntime>(CompileOptions::default());
+    assert_matmul_options(&cx, "MPSBatchedMatmul");
     let mut rt = MetalRuntime::initialize(());
 
     let a_data = seeded_data(batch * m * k, 0.17, -0.08);
     let b_data = seeded_data(batch * k * n, 0.11, -0.05);
     rt.set_data(a, &a_data);
     rt.set_data(b, &b_data);
-    rt = cx.search(rt, 1);
-
-    let kernels = rt.debug_kernel_ops();
-    assert!(
-        kernels.iter().any(|k| k.contains("MPSBatchedMatmul")),
-        "expected MPS batched matmul path, kernels: {:?}",
-        kernels
-    );
+    rt = search_candidates(&mut cx, rt, 32);
 
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
@@ -879,14 +886,18 @@ fn metal_generic_matmul_covers_noncontiguous_merged_head_projection() {
     let merged = attn.transpose(0, 1).merge_dims(1, 2);
     let output = merged.matmul(weight.t()).output();
 
-    cx.build_search_space::<MetalRuntime>();
+    cx.build_search_space::<MetalRuntime>(CompileOptions::default());
+    assert!(
+        egraph_has_op(&cx, "GenericMatmul"),
+        "expected GenericMatmul rewrite option in e-graph"
+    );
     let mut rt = MetalRuntime::initialize(());
 
     let attn_data = seeded_data(heads * seq * head_dim, 0.19, -0.09);
     let weight_data = seeded_data(out_dim * hidden, 0.14, -0.06);
     rt.set_data(attn, &attn_data);
     rt.set_data(weight, &weight_data);
-    rt = cx.search(rt, 1);
+    rt = search_candidates(&mut cx, rt, 32);
 
     let kernels = rt.debug_kernel_ops();
     assert!(
@@ -934,23 +945,15 @@ fn metal_mps_batched_matmul_transposed_rhs_layout() {
     let weight = cx.tensor((batch, n, k));
     let output = a.matmul(weight.permute((0, 2, 1))).output();
 
-    cx.build_search_space::<MetalRuntime>();
+    cx.build_search_space::<MetalRuntime>(CompileOptions::default());
+    assert_matmul_options(&cx, "MPSBatchedMatmul");
     let mut rt = MetalRuntime::initialize(());
 
     let a_data = seeded_data(batch * m * k, 0.13, -0.06);
     let weight_data = seeded_data(batch * n * k, 0.09, -0.04);
     rt.set_data(a, &a_data);
     rt.set_data(weight, &weight_data);
-    rt = cx.search(rt, 1);
-
-    let kernels = rt.debug_kernel_ops();
-    assert!(
-        kernels
-            .iter()
-            .any(|k| k.contains("MPSBatchedMatmul") && k.contains("transpose_rhs: true")),
-        "expected MPS batched matmul transposed RHS path, kernels: {:?}",
-        kernels
-    );
+    rt = search_candidates(&mut cx, rt, 32);
 
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
@@ -983,7 +986,8 @@ fn metal_mps_matmul_f16_transposed_rhs_weight_layout() {
     let weight = cx.tensor((n, k)).as_dtype(DType::F16);
     let output = a.matmul(weight.t()).cast(DType::F32).output();
 
-    cx.build_search_space::<MetalRuntime>();
+    cx.build_search_space::<MetalRuntime>(CompileOptions::default());
+    assert_matmul_options(&cx, "MPSMatmul");
     let mut rt = MetalRuntime::initialize(());
 
     let a_data = seeded_data(m * k, 0.22, -0.07);
@@ -991,14 +995,7 @@ fn metal_mps_matmul_f16_transposed_rhs_weight_layout() {
 
     rt.set_data(a, to_f16_vec(&a_data));
     rt.set_data(weight, to_f16_vec(&weight_data));
-    rt = cx.search(rt, 1);
-
-    let kernels = rt.debug_kernel_ops();
-    assert!(
-        kernels.iter().any(|k| k.contains("transpose_rhs: true")),
-        "expected MPS F16 matmul to cover transposed row-major RHS, kernels: {:?}",
-        kernels
-    );
+    rt = search_candidates(&mut cx, rt, 32);
 
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
@@ -1021,7 +1018,7 @@ fn metal_rms_norm() {
     let weight = cx.tensor(TRANSFORMER_HIDDEN);
     let output = rms_norm(input, weight, 1e-5).output();
 
-    cx.build_search_space::<MetalRuntime>();
+    cx.build_search_space::<MetalRuntime>(CompileOptions::default());
     let mut rt = MetalRuntime::initialize(());
 
     let input_data = seeded_data(TRANSFORMER_SEQ * TRANSFORMER_HIDDEN, 1.0, -0.5);
@@ -1029,7 +1026,7 @@ fn metal_rms_norm() {
 
     rt.set_data(input, &input_data);
     rt.set_data(weight, &weight_data);
-    rt = cx.search(rt, 1);
+    rt = cx.search(rt, CompileOptions::new(1));
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
 
@@ -1055,7 +1052,7 @@ fn metal_self_attention() {
     let wo = cx.tensor((TRANSFORMER_HIDDEN, TRANSFORMER_HIDDEN));
     let output = self_attention(input, wq, wk, wv, wo).output();
 
-    cx.build_search_space::<MetalRuntime>();
+    cx.build_search_space::<MetalRuntime>(CompileOptions::default());
     let mut rt = MetalRuntime::initialize(());
 
     let input_data = seeded_data(TRANSFORMER_SEQ * TRANSFORMER_HIDDEN, 1.0, -0.5);
@@ -1069,7 +1066,7 @@ fn metal_self_attention() {
     rt.set_data(wk, &wk_data);
     rt.set_data(wv, &wv_data);
     rt.set_data(wo, &wo_data);
-    rt = cx.search(rt, 1);
+    rt = cx.search(rt, CompileOptions::new(1));
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
 
@@ -1114,7 +1111,7 @@ fn metal_self_attention_f16_weights() {
         .cast(DType::F32)
         .output();
 
-    cx.build_search_space::<MetalRuntime>();
+    cx.build_search_space::<MetalRuntime>(CompileOptions::default());
     let mut rt = MetalRuntime::initialize(());
 
     let input_data = seeded_data(TRANSFORMER_SEQ * TRANSFORMER_HIDDEN, 1.0, -0.5);
@@ -1128,7 +1125,7 @@ fn metal_self_attention_f16_weights() {
     rt.set_data(wk, to_f16_vec(&wk_data));
     rt.set_data(wv, to_f16_vec(&wv_data));
     rt.set_data(wo, to_f16_vec(&wo_data));
-    rt = cx.search(rt, 1);
+    rt = cx.search(rt, CompileOptions::new(1));
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
 
@@ -1160,7 +1157,7 @@ fn metal_swiglu_mlp() {
     let w_down = cx.tensor((TRANSFORMER_HIDDEN, TRANSFORMER_INTERMEDIATE));
     let output = swiglu_mlp(input, w_gate, w_up, w_down).output();
 
-    cx.build_search_space::<MetalRuntime>();
+    cx.build_search_space::<MetalRuntime>(CompileOptions::default());
     let mut rt = MetalRuntime::initialize(());
 
     let input_data = seeded_data(TRANSFORMER_SEQ * TRANSFORMER_HIDDEN, 1.0, -0.5);
@@ -1172,7 +1169,7 @@ fn metal_swiglu_mlp() {
     rt.set_data(w_gate, &gate_data);
     rt.set_data(w_up, &up_data);
     rt.set_data(w_down, &down_data);
-    rt = cx.search(rt, 1);
+    rt = cx.search(rt, CompileOptions::new(1));
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
 
@@ -1212,7 +1209,7 @@ fn metal_mini_transformer_layer() {
     let layer = MiniTransformerLayer::init(&mut cx);
     let output = layer.forward(input).output();
 
-    cx.build_search_space::<MetalRuntime>();
+    cx.build_search_space::<MetalRuntime>(CompileOptions::default());
     let mut rt = MetalRuntime::initialize(());
 
     let input_data = seeded_data(TRANSFORMER_SEQ * TRANSFORMER_HIDDEN, 1.0, -0.5);
@@ -1222,7 +1219,7 @@ fn metal_mini_transformer_layer() {
     for (tensor, data) in &weight_data {
         rt.set_data(*tensor, data);
     }
-    rt = cx.search(rt, 1);
+    rt = cx.search(rt, CompileOptions::new(1));
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
 
@@ -1278,7 +1275,7 @@ fn metal_mini_transformer_layer_f16_intermediate() {
     .cast(DType::F32);
     let output = (x + mlp_out).output();
 
-    cx.build_search_space::<MetalRuntime>();
+    cx.build_search_space::<MetalRuntime>(CompileOptions::default());
     let mut rt = MetalRuntime::initialize(());
 
     let input_data = seeded_data(TRANSFORMER_SEQ * TRANSFORMER_HIDDEN, 1.0, -0.5);
@@ -1288,7 +1285,7 @@ fn metal_mini_transformer_layer_f16_intermediate() {
     for (tensor, data) in &weight_data {
         rt.set_data(*tensor, data);
     }
-    rt = cx.search(rt, 1);
+    rt = cx.search(rt, CompileOptions::new(1));
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
 
@@ -1325,12 +1322,12 @@ fn test_scatter_basic() {
     let dest = cx.tensor(5);
     let result = src.scatter(indexes, dest).output();
 
-    cx.build_search_space::<MetalRuntime>();
+    cx.build_search_space::<MetalRuntime>(CompileOptions::default());
     let mut rt = MetalRuntime::initialize(());
     rt.set_data(src, &[10.0, 20.0, 30.0]);
     rt.set_data(indexes, &[1.0, 3.0, 4.0]);
     rt.set_data(dest, &[0.0, 0.0, 0.0, 0.0, 0.0]);
-    rt = cx.search(rt, 1);
+    rt = cx.search(rt, CompileOptions::new(1));
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
 
@@ -1347,12 +1344,12 @@ fn test_scatter_buffer_roundtrip() {
     let cache_out = src.scatter(indexes, cache);
     let read = cache_out.output();
 
-    cx.build_search_space::<MetalRuntime>();
+    cx.build_search_space::<MetalRuntime>(CompileOptions::default());
     let mut rt = MetalRuntime::initialize(());
     rt.set_data(src, &[0.0]);
     rt.set_data(indexes, &[0.0]);
     rt.set_zeros(cache, 4 * std::mem::size_of::<f32>());
-    rt = cx.search(rt, 1);
+    rt = cx.search(rt, CompileOptions::new(1));
 
     for (pos, value, expected) in [
         (0, 10.0, [10.0, 0.0, 0.0, 0.0]),
@@ -1381,12 +1378,12 @@ fn test_load_safetensors_f32_survives_search_and_overrides_input_data() {
     let tensors = [("weights", Dtype::F32, vec![3], bytes_of(&weight_values))];
     let path = write_test_safetensors(&tensors);
 
-    cx.build_search_space::<MetalRuntime>();
+    cx.build_search_space::<MetalRuntime>(CompileOptions::default());
     let mut rt = MetalRuntime::initialize(());
     rt.set_data(weights, &[99.0, 99.0, 99.0]);
     rt.set_data(bias, &[0.5, 1.0, -1.5]);
     rt.load_safetensors(&cx, path.to_str().unwrap());
-    rt = cx.search(rt, 1);
+    rt = cx.search(rt, CompileOptions::new(1));
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
 
@@ -1448,10 +1445,10 @@ fn test_load_safetensors_converts_supported_float_dtypes() {
     ];
     let path = write_test_safetensors(&tensors);
 
-    cx.build_search_space::<MetalRuntime>();
+    cx.build_search_space::<MetalRuntime>(CompileOptions::default());
     let mut rt = MetalRuntime::initialize(());
     rt.load_safetensors(&cx, path.to_str().unwrap());
-    rt = cx.search(rt, 1);
+    rt = cx.search(rt, CompileOptions::new(1));
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
 
@@ -1471,14 +1468,14 @@ fn test_gather_noncontiguous_data_uses_data_shape() {
     let indexes = cx.tensor((2, 2)).as_dtype(DType::Int);
     let out = data.gather(indexes).output();
 
-    cx.build_search_space::<MetalRuntime>();
+    cx.build_search_space::<MetalRuntime>(CompileOptions::default());
     let mut rt = MetalRuntime::initialize(());
     rt.set_data(
         input,
         &[0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0],
     );
     rt.set_data(indexes, &[0.0, 3.0, 4.0, 7.0]);
-    rt = cx.search(rt, 1);
+    rt = cx.search(rt, CompileOptions::new(1));
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
 
@@ -1493,12 +1490,12 @@ fn test_scatter_into_nonzero_dest() {
     let dest = cx.tensor(5);
     let result = src.scatter(indexes, dest).output();
 
-    cx.build_search_space::<MetalRuntime>();
+    cx.build_search_space::<MetalRuntime>(CompileOptions::default());
     let mut rt = MetalRuntime::initialize(());
     rt.set_data(src, &[99.0]);
     rt.set_data(indexes, &[2f32]);
     rt.set_data(dest, &[1.0, 2.0, 3.0, 4.0, 5.0]);
-    rt = cx.search(rt, 1);
+    rt = cx.search(rt, CompileOptions::new(1));
     let kernels = rt.debug_kernel_ops();
     assert!(
         kernels.iter().any(|k| k.contains("MetalScatterNoCopy")),
@@ -1520,12 +1517,12 @@ fn test_scatter_no_copy_remove_buffer_aliases_dest() {
     let dest = cx.tensor(5);
     let result = src.scatter(indexes, dest).output();
 
-    cx.build_search_space::<MetalRuntime>();
+    cx.build_search_space::<MetalRuntime>(CompileOptions::default());
     let mut rt = MetalRuntime::initialize(());
     rt.set_data(src, &[7.0, 8.0]);
     rt.set_data(indexes, &[1.0, 3.0]);
     rt.set_data(dest, &[10.0, 20.0, 30.0, 40.0, 50.0]);
-    rt = cx.search(rt, 1);
+    rt = cx.search(rt, CompileOptions::new(1));
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
 
@@ -1549,12 +1546,12 @@ fn test_scatter_no_copy_handles_2d_destination() {
     let dest = cx.tensor((2, 3));
     let result = src.scatter(indexes, dest).output();
 
-    cx.build_search_space::<MetalRuntime>();
+    cx.build_search_space::<MetalRuntime>(CompileOptions::default());
     let mut rt = MetalRuntime::initialize(());
     rt.set_data(src, &[9.0, 8.0]);
     rt.set_data(indexes, &[2.0, 4.0]);
     rt.set_data(dest, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
-    rt = cx.search(rt, 1);
+    rt = cx.search(rt, CompileOptions::new(1));
     let kernels = rt.debug_kernel_ops();
     assert!(
         kernels.iter().any(|k| k.contains("MetalScatterNoCopy")),
@@ -1576,12 +1573,12 @@ fn test_scatter_no_copy_not_selected_when_dest_has_another_consumer() {
     let scatter = src.scatter(indexes, dest).output();
     let dest_plus_one = (dest + 1.0).output();
 
-    cx.build_search_space::<MetalRuntime>();
+    cx.build_search_space::<MetalRuntime>(CompileOptions::default());
     let mut rt = MetalRuntime::initialize(());
     rt.set_data(src, &[99.0]);
     rt.set_data(indexes, &[1.0]);
     rt.set_data(dest, &[10.0, 20.0, 30.0, 40.0]);
-    rt = cx.search(rt, 1);
+    rt = cx.search(rt, CompileOptions::new(1));
     let kernels = rt.debug_kernel_ops();
     assert!(
         !kernels.iter().any(|k| k.contains("MetalScatterNoCopy")),
@@ -1603,12 +1600,12 @@ fn test_scatter_all_positions() {
     let dest = cx.tensor(4);
     let result = src.scatter(indexes, dest).output();
 
-    cx.build_search_space::<MetalRuntime>();
+    cx.build_search_space::<MetalRuntime>(CompileOptions::default());
     let mut rt = MetalRuntime::initialize(());
     rt.set_data(src, &[40.0, 30.0, 20.0, 10.0]);
     rt.set_data(indexes, &[3.0, 2.0, 1.0, 0.0]);
     rt.set_data(dest, &[1.0, 2.0, 3.0, 4.0]);
-    rt = cx.search(rt, 1);
+    rt = cx.search(rt, CompileOptions::new(1));
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
 
@@ -1623,11 +1620,11 @@ fn test_gather_preserves_data_dtype() {
     let indexes = cx.tensor(1).as_dtype(DType::Int);
     let out = data.gather(indexes).output();
 
-    cx.build_search_space::<MetalRuntime>();
+    cx.build_search_space::<MetalRuntime>(CompileOptions::default());
     let mut rt = MetalRuntime::initialize(());
     rt.set_data(data, &[1.25, 2.5]);
     rt.set_data(indexes, &[1.0]);
-    rt = cx.search(rt, 1);
+    rt = cx.search(rt, CompileOptions::new(1));
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
 

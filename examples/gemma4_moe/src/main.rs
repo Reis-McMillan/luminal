@@ -5,11 +5,13 @@ use hf::prepare_hf_model;
 use luminal::prelude::*;
 use luminal_cuda_lite::{cudarc::driver::CudaContext, runtime::CudaRuntime};
 use model::*;
+use rand::{SeedableRng, rngs::SmallRng};
 use rustc_hash::FxHashSet;
 use std::{io::Write, time::Duration};
 use tokenizers::Tokenizer;
 
 const REPO_ID: &str = "google/gemma-4-26B-A4B";
+const SEARCH_SEED: u64 = 0;
 
 fn env_bool(name: &str) -> bool {
     std::env::var(name)
@@ -47,9 +49,20 @@ fn main() {
         k_out.output();
         v_out.output();
     }
+    let max_prefill = (prompt_tokens.len() + 16)
+        .next_power_of_two()
+        .min(max_seq_len);
+    let search_s = 16.min(max_prefill).max(2);
+    let build_options = CompileOptions::default().dim_buckets(
+        's',
+        &[
+            DimBucket::new(1, 1),
+            DimBucket::new(2, max_prefill).representative(search_s),
+        ],
+    );
 
     println!("Building E-Graph...");
-    cx.build_search_space::<CudaRuntime>();
+    cx.build_search_space::<CudaRuntime>(build_options);
 
     println!("Loading weights...");
     let mut runtime = CudaRuntime::initialize(stream);
@@ -63,22 +76,16 @@ fn main() {
     }
 
     println!("Compiling...");
-    let max_prefill = (prompt_tokens.len() + 16)
-        .next_power_of_two()
-        .min(max_seq_len);
-    let search_s = 16.min(max_prefill).max(2);
-    cx.set_dim_buckets(
-        's',
-        &[
-            DimBucket::new(1, 1),
-            DimBucket::new(2, max_prefill).representative(search_s),
-        ],
-    );
     cx.set_dim('s', search_s);
     cx.set_dim('p', 0);
     runtime.set_data(input, vec![1; search_s]);
     runtime.set_data(pos_ids, (0..search_s as i32).collect::<Vec<_>>());
-    runtime = cx.search(runtime, search_graphs);
+    let mut rng = SmallRng::seed_from_u64(SEARCH_SEED);
+    runtime = cx.search_with_rng(
+        runtime,
+        CompileOptions::new(search_graphs).profile_timeout(Duration::from_secs(2)),
+        &mut rng,
+    );
 
     for layer in 0..LAYERS {
         let cache_bytes = cache_bytes_for_layer(layer, max_seq_len);

@@ -413,15 +413,18 @@ impl<'a> Translator<'a> {
 
         // Build top-k outputs from a full stable argsort. Slice the indices
         // before gathering values so the gather shape matches the requested
-        // top-k output rather than the full sort width.
+        // top-k output rather than the full sort width. Cast to I64 so the
+        // emitted indices match PyTorch's `torch.topk` semantics (indices
+        // are int64); `gather_elements` accepts any int dtype on its index
+        // operand, so a single I64 tensor serves both consumers.
         let full_argsort = a.stable_argsort(dim, true);
-        let topk_indices = full_argsort.slice_along(..k, dim) * 1.0;
+        let topk_indices = (full_argsort.slice_along(..k, dim) * 1.0).cast(DType::I64);
 
         // Only build the outputs that are consumed.
         if let Some(val_name) = values_name
             && !val_name.is_empty()
         {
-            let values = a.gather_elements(topk_indices, dim);
+            let values = super::movement_dynamic::pt2_gather_elements(a, topk_indices, dim);
             self.tensors.insert(val_name, values);
         }
         if let Some(idx_name) = indices_name {
@@ -465,11 +468,12 @@ impl<'a> Translator<'a> {
         if let Some(val_name) = values_name
             && !val_name.is_empty()
         {
-            let values = a.gather_elements(full_argsort, dim);
+            let values = super::movement_dynamic::pt2_gather_elements(a, full_argsort, dim);
             self.tensors.insert(val_name, values);
         }
         if let Some(idx_name) = indices_name {
-            let indices = full_argsort * 1.0;
+            // `torch.sort` returns int64 indices; cast at the PT2 boundary.
+            let indices = (full_argsort * 1.0).cast(DType::I64);
             self.tensors.insert(idx_name, indices);
         }
 

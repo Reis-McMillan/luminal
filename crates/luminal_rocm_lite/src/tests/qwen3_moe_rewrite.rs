@@ -192,7 +192,7 @@ fn run_qwen_moe(use_glumoe: bool) -> (Vec<f32>, Vec<GLUMoEMode>) {
     let mut model = build_qwen_moe_graph();
     model.graph.set_dim('s', SEQ);
     if use_glumoe {
-        model.graph.build_search_space::<RocmRuntime>();
+        model.graph.build_search_space::<RocmRuntime>(CompileOptions::default());
     } else {
         model
             .graph
@@ -215,7 +215,7 @@ fn run_qwen_moe(use_glumoe: bool) -> (Vec<f32>, Vec<GLUMoEMode>) {
     rt.set_data(model.router, router_data);
     rt.set_data(model.gate_up_weights, gate_up_data);
     rt.set_data(model.down_weights, down_data);
-    rt = model.graph.search(rt, 10);
+    rt = model.graph.search(rt, CompileOptions::new(10));
     rt.execute(&model.graph.dyn_map);
 
     (rt.get_f32(model.output.id), glumoe_modes(&rt))
@@ -229,7 +229,7 @@ fn run_gemma_moe(use_glumoe: bool) -> (Vec<f32>, Vec<GLUMoEMode>) {
     let mut model = build_gemma_moe_graph();
     model.graph.set_dim('s', SEQ);
     if use_glumoe {
-        model.graph.build_search_space::<RocmRuntime>();
+        model.graph.build_search_space::<RocmRuntime>(CompileOptions::default());
     } else {
         model
             .graph
@@ -258,7 +258,7 @@ fn run_gemma_moe(use_glumoe: bool) -> (Vec<f32>, Vec<GLUMoEMode>) {
     rt.set_data(model.per_expert_scale, per_expert_scale_data);
     rt.set_data(model.gate_up_weights, gate_up_data);
     rt.set_data(model.down_weights, down_data);
-    rt = model.graph.search(rt, 10);
+    rt = model.graph.search(rt, CompileOptions::new(10));
     rt.execute(&model.graph.dyn_map);
 
     (rt.get_f32(model.output.id), glumoe_modes(&rt))

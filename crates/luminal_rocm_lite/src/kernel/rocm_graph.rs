@@ -485,8 +485,8 @@ mod tests {
         let data_b = random_f32_vec(size, 43, -0.5, 0.5);
         rt.set_data(a, data_a.clone());
         rt.set_data(b, data_b.clone());
-        cx.build_search_space::<RocmRuntime>();
-        rt = cx.search(rt, 5);
+        cx.build_search_space::<RocmRuntime>(CompileOptions::default());
+        rt = cx.search(rt, CompileOptions::new(5));
         rt.execute(&cx.dyn_map);
         let result1 = rt.get_f32(c);
         rt.execute(&cx.dyn_map);
@@ -517,8 +517,8 @@ mod tests {
         let data_b = random_f32_vec(size, 43, -0.5, 0.5);
         rt.set_data(a, data_a.clone());
         rt.set_data(b, data_b.clone());
-        cx.build_search_space::<RocmRuntime>();
-        rt = cx.search(rt, 5);
+        cx.build_search_space::<RocmRuntime>(CompileOptions::default());
+        rt = cx.search(rt, CompileOptions::new(5));
         let mut results = Vec::new();
         for _ in 0..5 {
             rt.execute(&cx.dyn_map);
@@ -555,8 +555,8 @@ mod tests {
         rt.set_data(a, data_a.clone());
         rt.set_data(b, data_b.clone());
         cx.set_dim('s', size);
-        cx.build_search_space::<RocmRuntime>();
-        rt = cx.search(rt, 5);
+        cx.build_search_space::<RocmRuntime>(CompileOptions::default());
+        rt = cx.search(rt, CompileOptions::new(5));
         rt.execute(&cx.dyn_map);
         let expected: Vec<f32> = data_a
             .iter()
@@ -597,8 +597,8 @@ mod tests {
         let data_b = random_f32_vec(size, 43, -0.5, 0.5);
         rt.set_data(a, data_a.clone());
         rt.set_data(b, data_b.clone());
-        cx.build_search_space::<RocmRuntime>();
-        rt = cx.search(rt, 5);
+        cx.build_search_space::<RocmRuntime>(CompileOptions::default());
+        rt = cx.search(rt, CompileOptions::new(5));
         rt.execute(&cx.dyn_map);
         let expected: Vec<f32> = data_a.iter().zip(&data_b).map(|(a, b)| a + b).collect();
         let eps = dtype_epsilon(luminal::dtype::DType::F32);
@@ -628,8 +628,8 @@ mod tests {
         let data_b = random_f32_vec(size, 43, -0.5, 0.5);
         rt.set_data(a, data_a.clone());
         rt.set_data(b, data_b.clone());
-        cx.build_search_space::<RocmRuntime>();
-        rt = cx.search(rt, 5);
+        cx.build_search_space::<RocmRuntime>(CompileOptions::default());
+        rt = cx.search(rt, CompileOptions::new(5));
         for _ in 0..10 {
             rt.execute(&cx.dyn_map);
         }
@@ -661,8 +661,8 @@ mod tests {
         let data_b = random_f32_vec(initial_size, 43, -0.5, 0.5);
         rt.set_data(a, data_a.clone());
         rt.set_data(b, data_b.clone());
-        cx.build_search_space::<RocmRuntime>();
-        rt = cx.search(rt, 5);
+        cx.build_search_space::<RocmRuntime>(CompileOptions::default());
+        rt = cx.search(rt, CompileOptions::new(5));
 
         // Initial execution
         rt.execute(&cx.dyn_map);

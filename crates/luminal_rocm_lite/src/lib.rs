@@ -38,6 +38,7 @@ fn rocm_dtype(dtype: DType) -> &'static str {
         DType::Bf16 => "__hip_bfloat16",
         DType::TF32 => "float", // TF32 uses float storage, tensor cores handle the format
         DType::Int => "int",
+        DType::I64 => "long long",
         DType::I16 => "short",
         DType::U16 => "unsigned short",
         DType::I8 => "signed char",

@@ -483,7 +483,7 @@ fn hipblaslt_cleanup_prunes_flux2_broadcast_mul_fallback() {
     let k = cx.tensor((8usize, 4usize));
     let _out = q.matmul(k.t()).output();
 
-    cx.build_search_space::<RocmRuntime>();
+    cx.build_search_space::<RocmRuntime>(CompileOptions::default());
     let egraph = cx.egraph().expect("search space should have an e-graph");
     assert!(
         !hipblaslt_ir_nodes(egraph).is_empty(),
@@ -1041,7 +1041,7 @@ fn hipblaslt_fp8_scaled_candidate_reaches_fused_output_scale_consumer() {
     let scaled_out = scaled_a.matmul(b).cast(DType::F32) * (a_scale * b_scale).expand_rhs((m, n));
     (scaled_out * side).output();
 
-    cx.build_search_space::<RocmRuntime>();
+    cx.build_search_space::<RocmRuntime>(CompileOptions::default());
     let egraph = cx.egraph().expect("search space should have an e-graph");
 
     assert!(
@@ -1075,7 +1075,7 @@ fn hipblaslt_fp8_scaled_candidates_reach_fused_mlp_consumer() {
         * (up_input_scale * up_weight_scale).expand_rhs((m, n));
     (gate.swish() * up).output();
 
-    cx.build_search_space::<RocmRuntime>();
+    cx.build_search_space::<RocmRuntime>(CompileOptions::default());
     let egraph = cx.egraph().expect("search space should have an e-graph");
 
     assert!(
@@ -2959,7 +2959,7 @@ fn extract_forced_hipblaslt_llir_where(
     case_name: &str,
     matches: impl Fn(&LLIRGraph) -> bool,
 ) -> LLIRGraph {
-    cx.build_search_space::<RocmRuntime>();
+    cx.build_search_space::<RocmRuntime>(CompileOptions::default());
 
     let egraph = cx.egraph().expect("search space should have an e-graph");
     let ops = cx
@@ -3014,7 +3014,7 @@ fn assert_no_forced_hipblaslt_llir_where(
     case_name: &str,
     matches: impl Fn(&LLIRGraph) -> bool,
 ) {
-    cx.build_search_space::<RocmRuntime>();
+    cx.build_search_space::<RocmRuntime>(CompileOptions::default());
 
     let egraph = cx.egraph().expect("search space should have an e-graph");
     let ops = cx
@@ -3063,7 +3063,7 @@ fn assert_no_hipblaslt_llir_where(
     case_name: &str,
     matches: impl Fn(&LLIRGraph) -> bool,
 ) {
-    cx.build_search_space::<RocmRuntime>();
+    cx.build_search_space::<RocmRuntime>(CompileOptions::default());
 
     let egraph = cx.egraph().expect("search space should have an e-graph");
     let ops = cx

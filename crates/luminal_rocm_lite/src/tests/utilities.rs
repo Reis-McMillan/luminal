@@ -180,7 +180,7 @@ pub struct SearchEquivalenceFuzzConfig {
     pub generation_size: usize,
     pub mutations: usize,
     pub max_attempts: usize,
-    pub build_options: BuildSearchSpaceOptions,
+    pub build_options: CompileOptions,
     pub reference: SearchEquivalenceReference,
 }
 
@@ -198,7 +198,7 @@ impl Default for SearchEquivalenceFuzzConfig {
             generation_size: 16,
             mutations: 2,
             max_attempts: 1_000,
-            build_options: BuildSearchSpaceOptions::default(),
+            build_options: CompileOptions::default(),
             reference: SearchEquivalenceReference::FirstRocmExtraction,
         }
     }
@@ -249,7 +249,7 @@ impl<'a> RocmSearchEquivalenceFuzzer<'a> {
         self
     }
 
-    pub fn build_options(mut self, build_options: BuildSearchSpaceOptions) -> Self {
+    pub fn build_options(mut self, build_options: CompileOptions) -> Self {
         self.config.build_options = build_options;
         self
     }
@@ -317,11 +317,11 @@ pub fn fuzz_rocm_search_space_equivalence(
 
     let native_reference_outputs = if config.reference == SearchEquivalenceReference::NativeRuntime
     {
-        cx.build_search_space::<NativeRuntime>();
+        cx.build_search_space::<NativeRuntime>(CompileOptions::default());
         let mut native_rng = StdRng::seed_from_u64(config.seed);
-        let mut native_rt = cx.search_options(
+        let mut native_rt = cx.search_with_rng(
             NativeRuntime::default(),
-            SearchOptions::new(1),
+            CompileOptions::new(1),
             &mut native_rng,
         );
         for input in inputs {
@@ -338,7 +338,7 @@ pub fn fuzz_rocm_search_space_equivalence(
         None
     };
 
-    cx.build_search_space_with_options::<RocmRuntime>(config.build_options);
+    cx.build_search_space::<RocmRuntime>(config.build_options);
 
     let egraph = cx.egraph().expect("search space should be built");
     let ops = cx.egglog_ops().expect("search ops should be built");
@@ -593,12 +593,12 @@ pub fn test_unary_rocm<T: TestDType>(
     let a = cx.tensor(shape.clone());
     let b = func(a).output();
 
-    cx.build_search_space::<RocmRuntime>();
+    cx.build_search_space::<RocmRuntime>(CompileOptions::default());
     let mut rt = RocmRuntime::initialize(stream.clone());
 
     let input_data = generator(n_elements, seed);
     rt.set_data(a, input_data.clone());
-    rt = cx.search(rt, 5);
+    rt = cx.search(rt, CompileOptions::new(5));
     rt.execute(&cx.dyn_map);
 
     let result = T::get_from_runtime(&rt, b.id);
@@ -666,14 +666,14 @@ pub fn test_binary_rocm<T: TestDType>(
     let b = cx.tensor(b_shape.clone());
     let c = func(a, b).output();
 
-    cx.build_search_space::<RocmRuntime>();
+    cx.build_search_space::<RocmRuntime>(CompileOptions::default());
     let mut rt = RocmRuntime::initialize(stream.clone());
 
     let a_data = a_generator(a_elements, seed);
     let b_data = b_generator(b_elements, seed.wrapping_add(1));
     rt.set_data(a, a_data.clone());
     rt.set_data(b, b_data.clone());
-    rt = cx.search(rt, 5);
+    rt = cx.search(rt, CompileOptions::new(5));
     rt.execute(&cx.dyn_map);
 
     let result = T::get_from_runtime(&rt, c.id);
@@ -733,7 +733,7 @@ pub fn test_mod(
     let b = cx.tensor(b_shape.clone());
     let c = func(a, b).output();
 
-    cx.build_search_space::<RocmRuntime>();
+    cx.build_search_space::<RocmRuntime>(CompileOptions::default());
     let mut rt = RocmRuntime::initialize(stream.clone());
 
     let a_data = random_f32_vec(a_elements, seed, -0.5, 0.5);
@@ -741,7 +741,7 @@ pub fn test_mod(
     let b_data = random_f32_vec(b_elements, seed.wrapping_add(1), 0.1, 0.5);
     rt.set_data(a, a_data.clone());
     rt.set_data(b, b_data.clone());
-    rt = cx.search(rt, 5);
+    rt = cx.search(rt, CompileOptions::new(5));
     rt.execute(&cx.dyn_map);
 
     let result = rt.get_f32(c);

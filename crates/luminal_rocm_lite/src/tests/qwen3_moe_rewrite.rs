@@ -196,7 +196,7 @@ fn run_qwen_moe(use_glumoe: bool) -> (Vec<f32>, Vec<GLUMoEMode>) {
     } else {
         model
             .graph
-            .build_search_space_exclude_ops::<RocmRuntime, GLUMoE>();
+            .build_search_space_exclude_ops::<RocmRuntime, GLUMoE>(CompileOptions::default());
     }
 
     let x_data = random_f32_vec(SEQ * HIDDEN, 11, -0.15, 0.15);
@@ -233,7 +233,7 @@ fn run_gemma_moe(use_glumoe: bool) -> (Vec<f32>, Vec<GLUMoEMode>) {
     } else {
         model
             .graph
-            .build_search_space_exclude_ops::<RocmRuntime, GLUMoE>();
+            .build_search_space_exclude_ops::<RocmRuntime, GLUMoE>(CompileOptions::default());
     }
 
     let router_input_data = random_f32_vec(SEQ * HIDDEN, 21, -0.15, 0.15);

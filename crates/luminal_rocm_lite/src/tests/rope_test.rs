@@ -1,5 +1,5 @@
 use rocmrc::HipContext;
-use luminal::{graph::Graph, op::Runtime};
+use luminal::{graph::{CompileOptions, Graph}, op::Runtime};
 
 use crate::{kernel::apply_rope, runtime::RocmRuntime};
 

@@ -154,7 +154,7 @@ fn test_three_unary_chain_preserves_output() {
 #[ignore]
 fn bench_fused_vs_unfused_sqrt_recip() {
     use crate::compile_module_image_for_current_device;
-    use rocmrc::driver::{HipContext, LaunchConfig, PushKernelArg};
+    use rocmrc::hip::{HipContext, LaunchConfig, PushKernelArg};
 
     const N: usize = 1 << 20; // 1M elements
     const WARMUP: usize = 100;
@@ -881,7 +881,7 @@ fn test_merge_two_regions_at_outer_binary() {
 #[ignore]
 fn bench_fused_region_vs_unfused_3op() {
     use crate::compile_module_image_for_current_device;
-    use rocmrc::driver::{HipContext, LaunchConfig, PushKernelArg};
+    use rocmrc::hip::{HipContext, LaunchConfig, PushKernelArg};
 
     const N: usize = 1 << 20; // 1M elements
     const WARMUP: usize = 100;

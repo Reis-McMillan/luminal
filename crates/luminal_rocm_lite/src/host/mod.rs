@@ -1,6 +1,6 @@
 use std::{fmt::Debug, sync::Arc};
 
-use crate::rocmrc::driver::{HipStream, DriverError, result};
+use crate::rocmrc::hip::{HipStream, HipError, result};
 use luminal::{op::EgglogOp, prelude::*};
 mod rocblas;
 mod hipblaslt;
@@ -110,7 +110,7 @@ impl DeviceBuffer {
         self.len == 0
     }
 
-    pub fn clone_dtoh(self, stream: &Arc<HipStream>) -> Result<Vec<u8>, DriverError> {
+    pub fn clone_dtoh(self, stream: &Arc<HipStream>) -> Result<Vec<u8>, HipError> {
         let mut host = vec![0u8; self.len];
         unsafe {
             result::memcpy_dtoh_async(&mut host, self.ptr, stream.hip_stream())?;

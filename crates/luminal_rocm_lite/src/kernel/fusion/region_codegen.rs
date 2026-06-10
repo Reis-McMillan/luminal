@@ -26,7 +26,7 @@
 
 use std::sync::Arc;
 
-use rocmrc::driver::{HipFunction, HipModule, HipSlice, HipStream};
+use rocmrc::hip::{HipFunction, HipModule, HipSlice, HipStream};
 use luminal::{
     graph::LLIRGraph,
     prelude::{

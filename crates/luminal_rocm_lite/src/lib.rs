@@ -10,20 +10,19 @@ use std::{
 
 pub use rocmrc;
 
-use rocmrc::{driver::HipStream};
+use rocmrc::{hip::HipStream};
 
 #[cfg(test)]
 mod tests;
 
 use rocmrc::{
-    HipResult,
-    driver::{HipContext, sys as driver_sys},
+    hip::{HipContext, sys as driver_sys},
     hiprtc::{
         Hsaco,
         result::{self as hiprtc_result, HiprtcError},
         sys as hiprtc_sys,
     },
-    hipblaslt::{HipBlasLt}
+    hipblaslt::{HipBlasLT},
 };
 use luminal::dtype::DType;
 
@@ -154,9 +153,9 @@ fn rocm_driver_diagnostics() -> (Option<i32>, Option<i32>) {
 
 pub(crate) fn try_create_hipblaslt(
     stream: Arc<HipStream>,
-) -> std::result::Result<Arc<HipBlasLt>, String> {
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| HipBlasLt::new(stream))) {
-        Ok(Ok(handle)) => Ok(handle),
+) -> std::result::Result<Arc<HipBlasLT>, String> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| HipBlasLT::new(stream))) {
+        Ok(Ok(handle)) => Ok(Arc::new(handle)),
         Ok(Err(err)) => Err(err.to_string()),
         Err(payload) => {
             let message = if let Some(message) = payload.downcast_ref::<String>() {
@@ -200,8 +199,10 @@ fn build_module_image_compile_error(
 
 fn read_hiprtc_log(program: hiprtc_sys::hiprtcProgram) -> Option<String> {
     let raw = hiprtc_result::get_program_log(program).ok()?;
-    let log = raw.trim_end_matches('\0').trim().to_string();
-    if log.is_empty() { None } else { Some(log) }
+    let bytes: Vec<u8> = raw.iter().map(|&c| c as u8).collect();
+    let log = String::from_utf8_lossy(&bytes);
+    let log = log.trim_end_matches('\0').trim();
+    if log.is_empty() { None } else { Some(log.to_string()) }
 }
 
 pub(crate) fn compile_module_image_for_current_device<S: AsRef<str>>(
@@ -209,10 +210,16 @@ pub(crate) fn compile_module_image_for_current_device<S: AsRef<str>>(
     src: S,
 ) -> Result<Hsaco, RocmModuleImageCompileError> {
     let (driver_version, runtime_version) = rocm_driver_diagnostics();
-    let target_arch = ctx.gfx_arch().to_string();
+    // Device property queries are infallible in practice (the context/device
+    // already exists); a failure here means a broken driver, not a compile error.
+    let target_arch = ctx.gfx_arch().expect("failed to query device gfx arch");
+    let gfx_version = ctx
+        .gfx_version()
+        .expect("failed to query device gfx version");
     let hiprtc_options = rocm_hiprtc_compile_options(&target_arch);   // Vec<String>
 
-    let program = hiprtc_result::create_program(src.as_ref(), "kernel.hip").map_err(|error| {
+    let c_src = std::ffi::CString::new(src.as_ref()).expect("kernel source contains null byte");
+    let program = hiprtc_result::create_program(c_src.as_c_str(), Some(c"kernel.hip")).map_err(|error| {
         build_module_image_compile_error(
             Some(target_arch.clone()),
             driver_version,
@@ -238,7 +245,7 @@ pub(crate) fn compile_module_image_for_current_device<S: AsRef<str>>(
     }
 
     let hiprtc_log = read_hiprtc_log(program);
-    let rocbin = match hiprtc_result::get_code(program) {
+    let rocbin = match hiprtc_result::get_hsaco(program) {
         Ok(code) => code,
         Err(error) => {
             let _ = hiprtc_result::destroy_program(program);
@@ -249,7 +256,7 @@ pub(crate) fn compile_module_image_for_current_device<S: AsRef<str>>(
                 &hiprtc_options,
                 hiprtc_log,
                 RocmModuleImageCompileFailure::Hiprtc {
-                    stage: "get_code",
+                    stage: "get_hsaco",
                     error,
                 },
             ));
@@ -281,7 +288,8 @@ pub(crate) fn compile_module_image_for_current_device<S: AsRef<str>>(
         ));
     }
 
-    Ok(Hsaco::from_bytes(rocbin))
+    let bytes: Vec<u8> = rocbin.iter().map(|&c| c as u8).collect();
+    Ok(Hsaco::from_binary(bytes, gfx_version))
 }
 
 /// Returns the bandwidth of the device in GB/s. Unknown devices return `None`

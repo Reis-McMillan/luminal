@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use rocmrc::driver::{HipFunction, HipModule, HipSlice, HipStream};
+use rocmrc::hip::{HipFunction, HipModule, HipSlice, HipStream};
 use luminal::{
     egglog_utils::{
         api::{Rule, SortDef, sort},

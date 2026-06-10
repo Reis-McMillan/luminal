@@ -2,7 +2,7 @@ use crate::{
     host::{DeviceBuffer, HostOp},
     kernel::{RocmGraphTiming, KernelOp, record_rocm_graph_timings},
 };
-use rocmrc::driver::{HipFunction, HipModule, HipSlice, HipStream, result};
+use rocmrc::hip::{HipFunction, HipModule, HipSlice, HipStream, DevicePtr, result};
 
 use fixedbitset::FixedBitSet;
 use half::{bf16, f16};
@@ -170,9 +170,9 @@ impl RocmRuntime {
     /// - Device 0
     /// - Blocking sync scheduling
     /// - Default stream
-    pub fn new() -> Result<Self, rocmrc::driver::DriverError> {
+    pub fn new() -> Result<Self, rocmrc::hip::HipError> {
         // need gfx version
-        let ctx = rocmrc::driver::HipContext::new(0)?;
+        let ctx = rocmrc::hip::HipContext::new(0)?;
         ctx.bind_to_thread()?;
         let stream = ctx.default_stream();
 
@@ -211,7 +211,7 @@ impl RocmRuntime {
         let arena = bucket.arena.as_ref()?;
         let offset = *bucket.logical_buffer_offsets.get(logical_node)?;
         let len = *bucket.logical_buffer_bytes.get(logical_node)?;
-        let ptr = arena.device_ptr(stream).0.checked_add(offset as u64)?;
+        let ptr = (arena.device_ptr(stream).0 as u64).checked_add(offset as u64)?;
         Some(DeviceBuffer::new(ptr, len))
     }
 
@@ -220,7 +220,7 @@ impl RocmRuntime {
         src: DeviceBuffer,
     ) -> HipSlice<u8> {
         let dst = stream.alloc_zeros::<u8>(src.len()).unwrap();
-        let dst_ptr = dst.device_ptr(stream).0;
+        let dst_ptr = dst.device_ptr(stream).0 as u64;
         unsafe {
             result::memcpy_dtod_async(dst_ptr, src.ptr(), src.len(), stream.hip_stream())
                 .expect("cuMemcpyDtoDAsync failed");
@@ -243,7 +243,7 @@ impl RocmRuntime {
             }
 
             if let Some(ext) = external_output_buffers.get(&node) {
-                return Some(DeviceBuffer::new(ext.device_ptr(stream).0, ext.len()));
+                return Some(DeviceBuffer::new(ext.device_ptr(stream).0 as u64, ext.len()));
             }
 
             if let Some(buf) = Self::bucket_buffer(bucket, stream, &node) {
@@ -253,11 +253,11 @@ impl RocmRuntime {
             if let Some(hlir_node) = bucket.llir_to_hlir.get(&node) {
                 match hlir_buffers.get(hlir_node) {
                     Some(RocmInput::Buffer(buf)) => {
-                        return Some(DeviceBuffer::new(buf.device_ptr(stream).0, buf.len()));
+                        return Some(DeviceBuffer::new(buf.device_ptr(stream).0 as u64, buf.len()));
                     }
                     Some(RocmInput::Ptr(_)) => {
                         if let Some(ext) = external_buffers.get(hlir_node) {
-                            return Some(DeviceBuffer::new(ext.device_ptr(stream).0, ext.len()));
+                            return Some(DeviceBuffer::new(ext.device_ptr(stream).0 as u64, ext.len()));
                         }
                     }
                     None => {}
@@ -331,7 +331,8 @@ impl RocmRuntime {
         // ManuallyDrop prevents cuMemFree on drop (external allocator owns this memory).
         let slice = unsafe {
             self.hip_stream
-                .upgrade_device_ptr::<u8>(device_ptr, n_bytes)
+                .upgrade_device_ptr::<u8>(device_ptr as *mut std::ffi::c_void, n_bytes)
+                .expect("upgrade_device_ptr failed")
         };
         self.external_buffers
             .insert(id, std::mem::ManuallyDrop::new(slice));
@@ -457,7 +458,7 @@ impl RocmRuntime {
         let data_id = self.resolve_data_node(id);
         let bucket = self.active();
         if let Some(ext) = self.external_output_buffers.get(&data_id) {
-            return DeviceBuffer::new(ext.device_ptr(&self.hip_stream).0, ext.len());
+            return DeviceBuffer::new(ext.device_ptr(&self.hip_stream).0 as u64, ext.len());
         }
         if let Some(hlir_node) = bucket.llir_to_hlir.get(&data_id) {
             match self
@@ -466,12 +467,12 @@ impl RocmRuntime {
                 .expect("Cannot find input tensor in runtime!")
             {
                 RocmInput::Buffer(buf) => {
-                    DeviceBuffer::new(buf.device_ptr(&self.hip_stream).0, buf.len())
+                    DeviceBuffer::new(buf.device_ptr(&self.hip_stream).0 as u64, buf.len())
                 }
                 RocmInput::Ptr(_) => self
                     .external_buffers
                     .get(hlir_node)
-                    .map(|ext| DeviceBuffer::new(ext.device_ptr(&self.hip_stream).0, ext.len()))
+                    .map(|ext| DeviceBuffer::new(ext.device_ptr(&self.hip_stream).0 as u64, ext.len()))
                     .expect("Cannot read raw pointer input — no external_buffers entry for node"),
             }
         } else {
@@ -535,7 +536,8 @@ impl RocmRuntime {
             // Create non-owning HipSlice view of PyTorch's buffer
             let slice = unsafe {
                 self.hip_stream
-                    .upgrade_device_ptr::<u8>(device_ptr, n_bytes)
+                    .upgrade_device_ptr::<u8>(device_ptr as *mut std::ffi::c_void, n_bytes)
+                .expect("upgrade_device_ptr failed")
             };
 
             self.external_output_buffers
@@ -701,7 +703,7 @@ impl RocmRuntime {
 
         // Update cached pointer for the input
         let ptr = match &self.hlir_buffers[&input_id] {
-            RocmInput::Buffer(buf) => buf.device_ptr(&self.hip_stream).0,
+            RocmInput::Buffer(buf) => buf.device_ptr(&self.hip_stream).0 as u64,
             RocmInput::Ptr(p) => *p,
         };
         self.compiled_buckets[bi]
@@ -746,7 +748,7 @@ impl RocmRuntime {
             bucket.arena = Some(stream.alloc_zeros(bucket.arena_bytes).unwrap());
         }
 
-        let arena_ptr = bucket.arena.as_ref().unwrap().device_ptr(stream).0;
+        let arena_ptr = bucket.arena.as_ref().unwrap().device_ptr(stream).0 as u64;
         for (logical_node, &offset) in &bucket.logical_buffer_offsets {
             if let Some(ptr) = arena_ptr.checked_add(offset as u64) {
                 bucket.cached_buffer_ptrs.insert(*logical_node, ptr);
@@ -994,7 +996,7 @@ impl RocmRuntime {
                     let llir_node = bucket.hlir_to_llir.get(hlir_node)?;
                     let input = self.hlir_buffers.get(hlir_node)?;
                     let ptr = match input {
-                        RocmInput::Buffer(buf) => buf.device_ptr(&self.hip_stream).0,
+                        RocmInput::Buffer(buf) => buf.device_ptr(&self.hip_stream).0 as u64,
                         RocmInput::Ptr(p) => *p,
                     };
                     Some((*hlir_node, *llir_node, ptr))
@@ -1447,7 +1449,7 @@ impl Runtime for RocmRuntime {
                     continue;
                 };
                 let ptr = match input {
-                    RocmInput::Buffer(buf) => buf.device_ptr(&self.hip_stream).0,
+                    RocmInput::Buffer(buf) => buf.device_ptr(&self.hip_stream).0 as u64,
                     RocmInput::Ptr(p) => *p,
                 };
                 bucket.cached_buffer_ptrs.insert(llir_node, ptr);

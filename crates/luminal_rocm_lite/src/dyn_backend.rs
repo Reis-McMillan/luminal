@@ -4,7 +4,7 @@ use luminal::dtype::DType;
 use luminal::dyn_backend::{BackendCompileArgs, DynBackend, compile_backend};
 use luminal::prelude::*;
 
-use crate::rocmrc::driver::HipContext;
+use crate::rocmrc::hip::HipContext;
 use crate::runtime::RocmRuntime;
 
 /// [`DynBackend`] wrapper for [`RocmRuntime`].

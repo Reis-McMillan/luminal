@@ -16,16 +16,16 @@ use luminal::{
 use crate::{
     rocmrc::{
         rocblas::{
-            RocblasHandle,
+            RocBlas,
             sys::{rocblas_operation, rocblas_set_stream, rocblas_sgemm, rocblas_status},
         },
-        driver::HipStream,
+        hip::HipStream,
     },
     host::{DeviceBuffer, HostOp},
 };
 
 /// Global shared rocBLAS handle to avoid per-operation workspace allocation
-static SHARED_ROCBLAS: OnceLock<Arc<RocblasHandle>> = OnceLock::new();
+static SHARED_ROCBLAS: OnceLock<Arc<RocBlas>> = OnceLock::new();
 
 /// Parse rocBLAS operation from egglog string (e.g., "\"T\"" -> rocblas_operation_transpose)
 pub fn parse_rocblas_op(s: &str) -> rocblas_operation {
@@ -39,7 +39,6 @@ pub fn parse_rocblas_op(s: &str) -> rocblas_operation {
     }
 }
 
-#[derive(Debug)]
 #[allow(dead_code)]
 pub struct RocBlasSgemm {
     m: Expression,
@@ -51,7 +50,23 @@ pub struct RocBlasSgemm {
     ldb: Expression,
     ldc: Expression,
     /// Lazily initialized rocBLAS handle - created on first execute
-    rocblas: OnceLock<Arc<RocblasHandle>>,
+    rocblas: OnceLock<Arc<RocBlas>>,
+}
+
+// `RocBlas` does not implement `Debug`, so derive can't cover the handle field.
+impl std::fmt::Debug for RocBlasSgemm {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RocBlasSgemm")
+            .field("m", &self.m)
+            .field("n", &self.n)
+            .field("k", &self.k)
+            .field("a_layout", &self.a_layout)
+            .field("b_layout", &self.b_layout)
+            .field("lda", &self.lda)
+            .field("ldb", &self.ldb)
+            .field("ldc", &self.ldc)
+            .finish_non_exhaustive()
+    }
 }
 
 // Useless default for IntoEgglogOp
@@ -209,18 +224,19 @@ impl HostOp for RocBlasSgemm {
         .entered();
 
         // Use shared rocBLAS handle to avoid per-operation workspace allocation.
-        // `RocblasHandle::new` already returns `Arc<Self>`, so no outer Arc::new.
-        let rocblas = SHARED_ROCBLAS.get_or_init(|| RocblasHandle::new(stream.clone()).unwrap());
+        // `RocBlas::new` returns `Self`, so wrap it for the shared `Arc` slot.
+        let rocblas =
+            SHARED_ROCBLAS.get_or_init(|| Arc::new(RocBlas::new(stream.clone()).unwrap()));
 
         // Set the stream for this operation (rocBLAS handle can work with any stream).
-        // The stream types from rocblas::sys and driver::sys are compatible, just cast.
+        // The stream types from rocblas::sys and hip::sys are compatible, just cast.
         unsafe {
-            rocblas_set_stream(rocblas.rocblas_handle(), stream.hip_stream() as _);
+            rocblas_set_stream(*rocblas.handle(), stream.hip_stream() as _);
         }
 
         let status = unsafe {
             rocblas_sgemm(
-                rocblas.handle(),
+                *rocblas.handle(),
                 a_layout,
                 b_layout,
                 m,

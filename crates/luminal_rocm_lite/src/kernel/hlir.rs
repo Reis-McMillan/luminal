@@ -4,7 +4,7 @@ use crate::{
     compile_module_image_for_current_device, rocm_dtype,
     kernel::{HipFunctionExt, KernelOp},
 };
-use rocmrc::driver::{HipFunction, HipModule, HipSlice, HipStream};
+use rocmrc::hip::{HipFunction, HipModule, HipSlice, HipStream};
 use itertools::Itertools;
 use luminal::{
     egglog_utils::{

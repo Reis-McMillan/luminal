@@ -1,4 +1,4 @@
-use rocmrc::driver::HipContext;
+use rocmrc::hip::HipContext;
 use luminal::prelude::*;
 use luminal_nn::{gather_rows, scatter_rows};
 use rand::SeedableRng;

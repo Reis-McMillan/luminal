@@ -28,7 +28,7 @@
 
 use std::sync::Arc;
 
-use rocmrc::driver::{HipFunction, HipModule, HipSlice, HipStream};
+use rocmrc::hip::{HipFunction, HipModule, HipSlice, HipStream};
 use luminal::{
     dtype::DType, op::CustomOp, op::LLIROp, prelude::FxHashMap, prelude::GraphTensor,
     shape::Expression,

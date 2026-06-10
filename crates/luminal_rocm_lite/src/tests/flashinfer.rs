@@ -12,7 +12,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use rocmrc::driver::{HipStream, DevicePtr};
+use rocmrc::hip::{HipStream, DevicePtr};
 use luminal::egglog_utils::{hlir_to_egglog, run_egglog};
 use luminal::op::{EgglogOp, IntoEgglogOp};
 use luminal::prelude::*;
@@ -205,7 +205,7 @@ fn run_flashinfer(
     // Output is (heads, batch, dim); reshape to (batch, heads, dim).
     let mut out_bytes = vec![0u8; batch_size * HIDDEN * 4];
     unsafe {
-        rocmrc::driver::result::memcpy_dtoh_async(&mut out_bytes, out_ptr, stream.cu_stream())
+        rocmrc::hip::result::memcpy_dtoh_async(&mut out_bytes, out_ptr, stream.hip_stream())
             .unwrap();
     }
     stream.synchronize().unwrap();

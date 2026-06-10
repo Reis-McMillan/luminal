@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use rocmrc::driver::{HipContext, HipFunction, HipModule, HipSlice, HipStream};
+use rocmrc::hip::{HipContext, HipFunction, HipModule, HipSlice, HipStream};
 use luminal::prelude::*;
 use luminal_tracing::schema::{
     self as schema, TrackEvent, debug_annotation::NameField, trace_packet, track_event,

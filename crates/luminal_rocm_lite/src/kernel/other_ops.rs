@@ -5,7 +5,7 @@ use crate::{
     kernel::KernelOp,
     kernel::hlir::{dtype_includes, generate_dyn_dims_defines, kernel_rewrite},
 };
-use rocmrc::driver::{HipFunction, HipModule, HipSlice, HipStream};
+use rocmrc::hip::{HipFunction, HipModule, HipSlice, HipStream};
 use itertools::Itertools;
 use luminal::{
     egglog_utils::{

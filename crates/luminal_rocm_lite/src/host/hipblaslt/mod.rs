@@ -17,9 +17,8 @@ use luminal::{
 
 use crate::{
     rocmrc::{
-        HipResult,
         hipblaslt::{
-            HipBlasLt,
+            HipBlasLT, MatmulShared,
             sys::{
                 hipDataType, hipblasComputeType_t, hipblasLtEpilogue_t, hipblasLtMatmul,
                 hipblasLtMatmulAlgoGetHeuristic, hipblasLtMatmulDesc_t,
@@ -33,7 +32,7 @@ use crate::{
                 hipblasLtMatrixLayoutSetAttribute, hipblasLtOrder_t, hipblasOperation_t,
             },
         },
-        driver::HipStream,
+        hip::{HipStream, DevicePtr},
     },
     host::{DeviceBuffer, HostOp},
     try_create_hipblaslt,
@@ -71,7 +70,7 @@ pub struct HipblasLt {
     epilogue: hipblasLtEpilogue_t,
     a_scale_input: bool,
     b_scale_input: bool,
-    hipblas_lt: OnceLock<Arc<HipBlasLt>>,
+    hipblas_lt: OnceLock<Arc<HipBlasLT>>,
 }
 
 // Useless default for IntoEgglogOp
@@ -812,7 +811,7 @@ fn set_scalar_scale_pointer(
 
 fn run_hipblaslt_matmul(
     stream: &Arc<HipStream>,
-    hipblas_lt: &Arc<HipBlasLt>,
+    hipblas_lt: &Arc<HipBlasLT>,
     spec: &LtMatmulSpec,
     ptrs: LtMatmulPointers,
 ) -> anyhow::Result<()> {
@@ -829,7 +828,7 @@ fn run_hipblaslt_matmul(
     let mut heuristic: hipblasLtMatmulHeuristicResult_t = unsafe { std::mem::zeroed() };
     let mut algo_count: i32 = 0;
 
-    let workspace = stream.alloc::<u8>(spec.workspace_size)?;
+    let workspace = unsafe { stream.alloc::<u8>(spec.workspace_size) }?;
     let (workspace_ptr, _workspace_guard) = workspace.device_ptr(stream);
 
     let a_scale = if rocm_dtype_needs_tensorwide_scale(spec.a.dtype) && ptrs.a_scale.is_none() {
@@ -897,7 +896,7 @@ fn run_hipblaslt_matmul(
         (Some(ptr), None)
     } else if let Some(scale) = &a_scale {
         let (ptr, guard) = scale.device_ptr(stream);
-        (Some(ptr), Some(guard))
+        (Some(ptr as u64), Some(guard))
     } else {
         (None, None)
     };
@@ -905,19 +904,19 @@ fn run_hipblaslt_matmul(
         (Some(ptr), None)
     } else if let Some(scale) = &b_scale {
         let (ptr, guard) = scale.device_ptr(stream);
-        (Some(ptr), Some(guard))
+        (Some(ptr as u64), Some(guard))
     } else {
         (None, None)
     };
     let (c_scale_ptr, _c_scale_guard) = if let Some(scale) = &c_scale {
         let (ptr, guard) = scale.device_ptr(stream);
-        (Some(ptr), Some(guard))
+        (Some(ptr as u64), Some(guard))
     } else {
         (None, None)
     };
     let (d_scale_ptr, _d_scale_guard) = if let Some(scale) = &d_scale {
         let (ptr, guard) = scale.device_ptr(stream);
-        (Some(ptr), Some(guard))
+        (Some(ptr as u64), Some(guard))
     } else {
         (None, None)
     };
@@ -977,7 +976,7 @@ fn run_hipblaslt_matmul(
         .result()?;
 
         hipblasLtMatmulAlgoGetHeuristic(
-            hipblas_lt.handle(),
+            *hipblas_lt.handle(),
             resources.matmul_desc,
             resources.a_desc,
             resources.b_desc,
@@ -997,7 +996,7 @@ fn run_hipblaslt_matmul(
         let alpha_ptr = spec.compute.alpha.as_ptr();
         let beta_ptr = spec.compute.beta.as_ptr();
         hipblasLtMatmul(
-            hipblas_lt.handle(),
+            *hipblas_lt.handle(),
             resources.matmul_desc,
             alpha_ptr,
             ptrs.a as *const std::ffi::c_void,
@@ -1129,7 +1128,7 @@ fn epilogue_uses_bias(epilogue: hipblasLtEpilogue_t) -> bool {
 }
 
 impl HipblasLt {
-    fn get_hipblaslt(&self, stream: &Arc<HipStream>) -> anyhow::Result<Arc<HipBlasLt>> {
+    fn get_hipblaslt(&self, stream: &Arc<HipStream>) -> anyhow::Result<Arc<HipBlasLT>> {
         if let Some(hipblas_lt) = self.hipblas_lt.get() {
             return Ok(hipblas_lt.clone());
         }

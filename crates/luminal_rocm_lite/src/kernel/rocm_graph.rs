@@ -6,9 +6,8 @@ use std::mem::MaybeUninit;
 use std::sync::Arc;
 
 use rocmrc::{
-    HipResult,
-    driver::{
-        HipContext, HipFunction, HipStream, DriverError,
+    hip::{
+        HipContext, HipFunction, HipStream, HipError, DevicePtr,
         sys::{self, hipEvent_t, hipFunction_t, hipGraph_t, hipGraphExec_t, hipGraphNode_t},
     },
 };
@@ -21,7 +20,7 @@ pub struct RocmGraphHandle {
 
 impl RocmGraphHandle {
     /// Creates a new empty HIP graph.
-    pub fn new(ctx: Arc<HipContext>) -> Result<Self, DriverError> {
+    pub fn new(ctx: Arc<HipContext>) -> Result<Self, HipError> {
         ctx.bind_to_thread()?;
         let mut graph = MaybeUninit::uninit();
         unsafe {
@@ -42,7 +41,7 @@ impl RocmGraphHandle {
         block_dim: (u32, u32, u32),
         shared_mem_bytes: u32,
         kernel_params: *mut *mut c_void,
-    ) -> Result<hipGraphNode_t, DriverError> {
+    ) -> Result<hipGraphNode_t, HipError> {
         let params = sys::hipKernelNodeParams {
             // hipKernelNodeParams.func is `*mut c_void` (not hipFunction_t
             // directly) — pass the raw module-function handle as a void*.
@@ -73,7 +72,7 @@ impl RocmGraphHandle {
         &mut self,
         dependencies: &[hipGraphNode_t],
         event: hipEvent_t,
-    ) -> Result<hipGraphNode_t, DriverError> {
+    ) -> Result<hipGraphNode_t, HipError> {
         let mut node = MaybeUninit::uninit();
         unsafe {
             sys::hipGraphAddEventRecordNode(
@@ -89,7 +88,7 @@ impl RocmGraphHandle {
     }
 
     /// Instantiates the graph, creating an executable graph.
-    pub fn instantiate(&self) -> Result<RocmGraphExecHandle, DriverError> {
+    pub fn instantiate(&self) -> Result<RocmGraphExecHandle, HipError> {
         self.ctx.bind_to_thread()?;
         let mut graph_exec = MaybeUninit::uninit();
         unsafe {
@@ -121,7 +120,7 @@ pub struct RocmGraphExecHandle {
 
 impl RocmGraphExecHandle {
     /// Launches the graph on the given stream.
-    pub fn launch(&self, stream: &HipStream) -> Result<(), DriverError> {
+    pub fn launch(&self, stream: &HipStream) -> Result<(), HipError> {
         self.ctx.bind_to_thread()?;
         unsafe { sys::hipGraphLaunch(self.graph_exec, stream.hip_stream()).result() }
     }
@@ -135,7 +134,7 @@ impl RocmGraphExecHandle {
         block_dim: (u32, u32, u32),
         shared_mem_bytes: u32,
         kernel_params: *mut *mut c_void,
-    ) -> Result<(), DriverError> {
+    ) -> Result<(), HipError> {
         let params = sys::hipKernelNodeParams {
             func: func as *mut c_void,
             gridDim: sys::dim3 { x: grid_dim.0, y: grid_dim.1, z: grid_dim.2 },
@@ -164,15 +163,16 @@ impl Drop for RocmGraphExecHandle {
 /// Extension trait to get the raw hipFunction_t handle from HipFunction.
 /// Compatibility shim: the cuda_lite original poked at `CudaFunction`'s
 /// private offset to extract the raw `CUfunction`. rocmrc exposes the raw
-/// `hipFunction_t` directly via `HipFunction::raw()`, so this just forwards.
-/// Kept as a trait so existing call sites (`func.raw_function()`) compile.
+/// `hipFunction_t` directly via `HipFunction::hip_function()`, so this just
+/// forwards. Kept as a trait so existing call sites (`func.raw_function()`)
+/// compile.
 pub trait HipFunctionExt {
     fn raw_function(&self) -> hipFunction_t;
 }
 
 impl HipFunctionExt for HipFunction {
     fn raw_function(&self) -> hipFunction_t {
-        self.raw()
+        self.hip_function()
     }
 }
 
@@ -327,7 +327,7 @@ pub struct RocmGraphTiming {
     pub setup_duration_ns: u64,
 }
 
-pub fn create_rocm_event(ctx: &Arc<HipContext>) -> Result<hipEvent_t, DriverError> {
+pub fn create_rocm_event(ctx: &Arc<HipContext>) -> Result<hipEvent_t, HipError> {
     ctx.bind_to_thread()?;
     let mut event = MaybeUninit::uninit();
     unsafe {
@@ -351,7 +351,7 @@ pub fn event_elapsed_ms(
     ctx: &Arc<HipContext>,
     start: hipEvent_t,
     end: hipEvent_t,
-) -> Result<f32, DriverError> {
+) -> Result<f32, HipError> {
     ctx.bind_to_thread()?;
     let mut ms: f32 = 0.0;
     unsafe {
@@ -364,7 +364,7 @@ pub fn record_event_on_stream(
     ctx: &Arc<HipContext>,
     event: hipEvent_t,
     stream: &HipStream,
-) -> Result<(), DriverError> {
+) -> Result<(), HipError> {
     ctx.bind_to_thread()?;
     unsafe {
         sys::hipEventRecord(event, stream.hip_stream()).result()?;
@@ -447,7 +447,7 @@ mod tests {
         let cu_func = unsafe { func.raw_function() };
         let mut graph = RocmGraphHandle::new(ctx.clone()).unwrap();
         let mut params =
-            KernelParams::new(output.device_ptr(&stream).0, &[input.device_ptr(&stream).0]);
+            KernelParams::new(output.device_ptr(&stream).0 as u64, &[input.device_ptr(&stream).0 as u64]);
         let _node = unsafe {
             graph.add_kernel_node(
                 &[],

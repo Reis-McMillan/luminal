@@ -6,7 +6,7 @@
 use std::cell::RefCell;
 use std::sync::Arc;
 
-use rocmrc::driver::{
+use rocmrc::hip::{
     HipFunction, HipModule, HipSlice, HipStream, DevicePtr, sys::hipGraphNode_t,
 };
 use itertools::Itertools;
@@ -140,7 +140,7 @@ struct RocmGraphOpState {
     /// Last buffer pointers (for change detection)
     last_buffer_ptrs: FxHashMap<NodeIndex, u64>,
     /// Timing events for profiling
-    timing_events: Vec<rocmrc::driver::sys::hipEvent_t>,
+    timing_events: Vec<rocmrc::hip::sys::hipEvent_t>,
 }
 
 impl RocmGraphOpState {
@@ -500,7 +500,7 @@ impl RocmGraphOp {
             let dyn_dims_ptr = state
                 .dyn_dims_buffer
                 .as_ref()
-                .map(|buf| buf.device_ptr(stream).0)
+                .map(|buf| buf.device_ptr(stream).0 as u64)
                 .unwrap_or(0);
 
             // Build params for each kernel first
@@ -629,7 +629,7 @@ impl RocmGraphOp {
         let dyn_dims_ptr = state
             .dyn_dims_buffer
             .as_ref()
-            .map(|buf| buf.device_ptr(stream).0)
+            .map(|buf| buf.device_ptr(stream).0 as u64)
             .unwrap_or(0);
 
         graph.ctx.bind_to_thread()?;

@@ -30,11 +30,7 @@ fn rocm_dtype(dtype: DType) -> &'static str {
     match dtype {
         DType::F64 => "double",
         DType::F32 => "float",
-        // HIP defines `half` (alias to `_Float16`) via hip/hip_fp16.h.
         DType::F16 => "half",
-        // HIP's bfloat16 type — declared in hip/hip_bf16.h. There's no
-        // `__nv_bfloat16` compatibility alias on AMD, so we use the native
-        // name directly.
         DType::Bf16 => "__hip_bfloat16",
         DType::TF32 => "float", // TF32 uses float storage, tensor cores handle the format
         DType::Int => "int",

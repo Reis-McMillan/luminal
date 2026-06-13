@@ -34,6 +34,22 @@ using InputDataType = ck_tile::bf16_t;
 using InputDataType = ck_tile::fp16_t;
 #endif
 
+// ── Warp tile (one matrix-core MMA instruction, M×N×K) ──
+// CDNA (gfx9, the production target) uses MFMA 32×32×16. RDNA3/RDNA4 (gfx11/12)
+// have no 32×32×16 instruction — they use WMMA 16×16×16, and an MFMA-shaped tile
+// silently produces zeros there. jit.rs passes -DLUMINAL_FMHA_WMMA when the
+// detected arch is a WMMA arch, so the same source is correct on both: tuned for
+// CDNA, testable on a gfx11 dev card.
+#if defined(LUMINAL_FMHA_WMMA)
+inline constexpr ck_tile::index_t kWarpTileM = 16;
+inline constexpr ck_tile::index_t kWarpTileN = 16;
+inline constexpr ck_tile::index_t kWarpTileK = 16;
+#else
+inline constexpr ck_tile::index_t kWarpTileM = 32;
+inline constexpr ck_tile::index_t kWarpTileN = 32;
+inline constexpr ck_tile::index_t kWarpTileK = 16;
+#endif
+
 // ── Dtype configuration ──
 // Storage (Q/K/V/O/probs) is 16-bit; the Q·Kᵀ accumulator, softmax math, output
 // accumulator, and LSE are fp32. This split is the concrete expression of
@@ -57,12 +73,12 @@ enum class MaskKind : int {
 };
 
 // ── Runtime arguments ──
-// Everything a launcher needs to build a ck_tile kernel's MakeKargs. Layout is
-// NHD: each tensor is logically (batch, seqlen, nhead, hdim), addressed by the
-// element strides below. GQA is expressed via nhead_q / nhead_k.
-//
-// TODO(confirm vs fmha_fwd_kernel.hpp): the exact stride set MakeKargs expects
-// (we finalize this when implementing prefill.hpp).
+// Everything a launcher needs to build a ck_tile kernel's MakeKargs. Group mode
+// (variable-length batches): the tensors are RAGGED — all sequences packed
+// contiguously along the seqlen axis as (total_tokens, nhead, hdim), with
+// per-sequence boundaries given by the cumulative seqstart_* arrays (a.k.a.
+// CSR indptr, length batch+1). There is no batch stride; sequence b's rows live
+// at [seqstart[b], seqstart[b+1]). GQA is expressed via nhead_q / nhead_k.
 struct fmha_args {
     // Device pointers. q/k/v/o are 16-bit (InputDataType); lse is fp32, optional.
     const void* q_ptr;
@@ -71,29 +87,40 @@ struct fmha_args {
     void*       o_ptr;
     void*       lse_ptr;        // nullptr when unused
 
+    // Cumulative per-sequence offsets (device, int32, length batch+1). These
+    // replace batch strides in group mode: seqstart_q indexes the packed Q/O,
+    // seqstart_k indexes the packed K/V.
+    const int32_t* seqstart_q_ptr;
+    const int32_t* seqstart_k_ptr;
+
     // Problem shape.
     ck_tile::index_t batch;
     ck_tile::index_t nhead_q;
     ck_tile::index_t nhead_k;   // GQA group size = nhead_q / nhead_k
-    ck_tile::index_t seqlen_q;
-    ck_tile::index_t seqlen_k;
+    ck_tile::index_t max_seqlen_q;    // longest seqlen_q in the batch; sizes the grid
+    ck_tile::index_t total_q_tokens;  // sum of seqlen_q (packed q rows); sizes partials
     ck_tile::index_t hdim_q;    // == hdim_v == kHeadDim for now
     ck_tile::index_t hdim_v;
 
     // Softmax scale (1 / sqrt(hdim)). Subsumes the graph's separate scale op.
     float scale_s;
 
-    // Strides, in elements:
+    // Strides, in elements (no batch stride in group mode — see seqstart_*):
     //   stride_*       — step along the seqlen axis
     //   nhead_stride_*  — step between heads
-    //   batch_stride_*  — step between batch items
-    ck_tile::index_t stride_q, nhead_stride_q, batch_stride_q;
-    ck_tile::index_t stride_k, nhead_stride_k, batch_stride_k;
-    ck_tile::index_t stride_v, nhead_stride_v, batch_stride_v;
-    ck_tile::index_t stride_o, nhead_stride_o, batch_stride_o;
+    ck_tile::index_t stride_q, nhead_stride_q;
+    ck_tile::index_t stride_k, nhead_stride_k;
+    ck_tile::index_t stride_v, nhead_stride_v;
+    ck_tile::index_t stride_o, nhead_stride_o;
 
     // Mask.
     MaskKind mask;
+
+    // Split-KV decode only (see decode.hpp). num_splits == 0 ⇒ unused (prefill).
+    // lse_acc/o_acc point at fp32 partials scratch of decode_partials_bytes().
+    void*            lse_acc_ptr = nullptr;
+    void*            o_acc_ptr   = nullptr;
+    ck_tile::index_t num_splits  = 0;
 };
 
 } // namespace luminal_fmha

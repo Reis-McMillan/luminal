@@ -257,7 +257,7 @@ impl HostOp for FlashInferAttention {
 
         // kv_last_page_len = [1; batch_size] when page_size=1.
         let last_page_host: Vec<i32> = vec![1; batch_size];
-        let last_page_dev: CudaSlice<u8> = if batch_size > 0 {
+        let last_page_dev: HipSlice<u8> = if batch_size > 0 {
             stream.clone_htod(unsafe {
                 std::slice::from_raw_parts(
                     last_page_host.as_ptr() as *const u8,
@@ -271,8 +271,8 @@ impl HostOp for FlashInferAttention {
 
         // Global shared workspaces (allocated once across all op instances to
         // amortize the ~4ms first-allocation cost during GA profiling).
-        static FLOAT_WORKSPACE: OnceLock<CudaSlice<u8>> = OnceLock::new();
-        static INT_WORKSPACE: OnceLock<CudaSlice<u8>> = OnceLock::new();
+        static FLOAT_WORKSPACE: OnceLock<HipSlice<u8>> = OnceLock::new();
+        static INT_WORKSPACE: OnceLock<HipSlice<u8>> = OnceLock::new();
         let float_ws = FLOAT_WORKSPACE
             .get_or_init(|| unsafe { stream.alloc::<u8>(FLOAT_WORKSPACE_SIZE).unwrap() });
         let int_ws = INT_WORKSPACE
@@ -281,8 +281,8 @@ impl HostOp for FlashInferAttention {
             let mut ptr: *mut std::ffi::c_void = std::ptr::null_mut();
             let status = libc::posix_memalign(&mut ptr, 4096, INT_WORKSPACE_SIZE);
             assert_eq!(status, 0, "Failed to allocate page-locked workspace");
-            let cuda_status = cuda_pin_memory(ptr, INT_WORKSPACE_SIZE);
-            assert_eq!(cuda_status, 0, "Failed to pin memory");
+            let pin_status = hip_pin_memory(ptr, INT_WORKSPACE_SIZE);
+            assert_eq!(pin_status, 0, "Failed to pin memory");
             PageLockedPtr(ptr as *mut u8)
         });
 
@@ -398,36 +398,30 @@ impl HostOp for FlashInferAttention {
 // |      |      |
 // V      V      V
 
-/// Pin host memory for HIP async memcpy.
+/// Pin host memory for HIP async memcpy via `hipHostRegister`.
 ///
-/// `cudaHostRegister` lives in libcudart, which cudarc doesn't link to our
-/// binary. Resolve it via `dlopen`/`dlsym` so we don't need a build script or
-/// a `#[link]` directive — keeping the crate buildable without any nvcc-side
-/// dependencies.
-unsafe fn cuda_pin_memory(ptr: *mut std::ffi::c_void, size: usize) -> i32 {
+/// Resolve `hipHostRegister` from libamdhip64 via `dlopen`/`dlsym` so we don't
+/// need a build script or a `#[link]` directive. (This is the HIP analog of the
+/// CUDA port's `cudaHostRegister`; the ROCm runtime is libamdhip64, not cudart.)
+unsafe fn hip_pin_memory(ptr: *mut std::ffi::c_void, size: usize) -> i32 {
     type HostRegisterFn = unsafe extern "C" fn(*mut std::ffi::c_void, usize, u32) -> i32;
     static FN: OnceLock<usize> = OnceLock::new();
 
     let raw = *FN.get_or_init(|| unsafe {
-        let lib = [
-            "libcudart.so",
-            "libcudart.so.13",
-            "libcudart.so.12",
-            "libcudart.so.11",
-        ]
-        .iter()
-        .find_map(|n| libloading::Library::new(*n).ok())
-        .expect("FlashInfer: could not dlopen libcudart for cudaHostRegister");
+        let lib = ["libamdhip64.so", "libamdhip64.so.7", "libamdhip64.so.6"]
+            .iter()
+            .find_map(|n| libloading::Library::new(*n).ok())
+            .expect("FlashInfer: could not dlopen libamdhip64 for hipHostRegister");
         let sym: libloading::Symbol<HostRegisterFn> = lib
-            .get(b"cudaHostRegister\0")
-            .expect("FlashInfer: libcudart missing cudaHostRegister symbol");
+            .get(b"hipHostRegister\0")
+            .expect("FlashInfer: libamdhip64 missing hipHostRegister symbol");
         let ptr = *sym as *const () as usize;
-        // Keep libcudart resident for the process lifetime so the function
+        // Keep libamdhip64 resident for the process lifetime so the function
         // pointer remains valid.
         std::mem::forget(lib);
         ptr
     });
     let f: HostRegisterFn = unsafe { std::mem::transmute(raw) };
-    // cudaHostRegisterDefault = 0
+    // hipHostRegisterDefault = 0
     unsafe { f(ptr, size, 0) }
 }

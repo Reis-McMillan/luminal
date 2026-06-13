@@ -244,27 +244,40 @@ fn compile_or_cache(head_dim: usize) -> PathBuf {
     );
     let start = std::time::Instant::now();
 
+    // The fmha warp tile differs by matrix-core ISA: CDNA (gfx9, the target) uses
+    // MFMA 32x32x16; RDNA3/RDNA4 (gfx11/gfx12) use WMMA 16x16x16 (an MFMA-shaped
+    // tile silently produces zeros there). The arch-conditional tile lives in
+    // fmha_types.hpp behind LUMINAL_FMHA_WMMA.
+    //
+    // NOTE: the WMMA path does NOT yet build — ck_tile's QR-KS-VS forward pipeline
+    // keeps the softmax probabilities P in registers between gemm0 and gemm1, and
+    // that C→A distribution reuse is only implemented for MFMA, not WMMA (gemm1
+    // fails to instantiate). So we do NOT pass -DLUMINAL_FMHA_WMMA: gfx11/12 builds
+    // with the MFMA tile (compiles, but fmha numerics are only valid on CDNA).
+    // Re-enable once a WMMA-compatible fwd config lands. TODO(wmma-fmha).
+    let _wmma_arch = arch.starts_with("gfx11") || arch.starts_with("gfx12");
+    let mut args: Vec<String> = vec![
+        "-shared".into(),
+        "-o".into(),
+        so_path.to_str().unwrap().into(),
+        format!("-DLUMINAL_HEAD_DIM={head_dim}"),
+        // -x hip forces HIP (device) compilation of the .cpp; without it
+        // hipcc treats .cpp as host-only C++ and the __global__ kernels fail.
+        "-x".into(),
+        "hip".into(),
+        wrapper_src_path.to_str().unwrap().into(),
+        "-I".into(),
+        ck_include.to_str().unwrap().into(),
+        "-I".into(),
+        include_dir.to_str().unwrap().into(),
+        "-std=c++17".into(),
+        format!("--offload-arch={arch}"),
+        "-O3".into(),
+        "-w".into(),
+        "-fPIC".into(),
+    ];
     let output = Command::new("hipcc")
-        .args([
-            "-shared",
-            "-o",
-            so_path.to_str().unwrap(),
-            &format!("-DLUMINAL_HEAD_DIM={}", head_dim),
-            // -x hip forces HIP (device) compilation of the .cpp; without it
-            // hipcc treats .cpp as host-only C++ and the __global__ kernels fail.
-            "-x",
-            "hip",
-            wrapper_src_path.to_str().unwrap(),
-            "-I",
-            ck_include.to_str().unwrap(),
-            "-I",
-            include_dir.to_str().unwrap(),
-            "-std=c++17",
-            &format!("--offload-arch={}", arch),
-            "-O3",
-            "-w",
-            "-fPIC",
-        ])
+        .args(&args)
         .output()
         .expect("Failed to run hipcc. Is the ROCm toolkit installed and on PATH?");
 
@@ -473,9 +486,22 @@ fn run_git_in(cwd: &Path, args: &[&str]) -> Result<(), String> {
     Ok(())
 }
 
-/// Detect ROCm arch via env override → amd-smi → default gfx950.
+/// Detect ROCm arch via env overrides → amd-smi → default gfx950.
+///
+/// Order matters: if `HSA_OVERRIDE_GFX_VERSION` is set (common on consumer cards
+/// whose physical ISA the runtime is told to masquerade as another — e.g. a
+/// gfx1102 RX 7600 XT overridden to 11.0.0/gfx1100), the *runtime* will only load
+/// code objects for the overridden arch. amd-smi reports the PHYSICAL arch
+/// (gfx1102), so trusting it would build a code object the runtime can't load and
+/// every kernel launch faults. The override therefore wins over amd-smi.
 fn detect_rocm_arch() -> String {
     if let Ok(arch) = std::env::var("FLASHINFER_ROCM_ARCH") {
+        return arch;
+    }
+
+    if let Ok(v) = std::env::var("HSA_OVERRIDE_GFX_VERSION")
+        && let Some(arch) = arch_from_hsa_override(&v)
+    {
         return arch;
     }
 
@@ -491,6 +517,20 @@ fn detect_rocm_arch() -> String {
     }
 
     "gfx950".to_string()
+}
+
+/// Map an `HSA_OVERRIDE_GFX_VERSION` value ("major.minor.stepping", e.g.
+/// "11.0.0") to a gfx arch string ("gfx1100"). minor/stepping are single hex
+/// digits (so "9.0.10" → "gfx90a", "9.4.2" → "gfx942").
+fn arch_from_hsa_override(v: &str) -> Option<String> {
+    let mut parts = v.trim().split('.');
+    let major: u32 = parts.next()?.parse().ok()?;
+    let minor: u32 = parts.next()?.parse().ok()?;
+    let stepping: u32 = parts.next()?.parse().ok()?;
+    if parts.next().is_some() || minor > 0xf || stepping > 0xf {
+        return None;
+    }
+    Some(format!("gfx{major}{minor:x}{stepping:x}"))
 }
 
 /// Pull `target_graphics_version` (e.g. "gfx1102") out of the

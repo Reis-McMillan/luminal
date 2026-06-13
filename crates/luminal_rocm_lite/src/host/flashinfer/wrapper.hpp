@@ -67,7 +67,7 @@ void flashinfer_transpose_output(
     int batch, int heads, int dim,
     hipStream_t stream);
 
-// ── BatchPrefill (uniform-length v1) ──
+// ── BatchPrefill (variable-length, ck_tile group mode) ──
 
 // Plan phase for batch prefill.
 int flashinfer_batch_prefill_plan(

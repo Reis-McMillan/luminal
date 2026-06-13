@@ -71,6 +71,13 @@ static __global__ void transpose_bhd_to_hbd_kernel(
     dst[h * batch * dim + b * dim + d] = src[idx];
 }
 
+// Fill out[i] = i for i in [0, n). Used to synthesize the group-mode
+// seqstart_q for the decode path (one query token per sequence ⇒ [0,1,..,n]).
+static __global__ void fill_iota_kernel(int32_t* out, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) out[i] = i;
+}
+
 constexpr int kThreads = 256;
 static inline int blocks_for(long long total) {
     return (int)((total + kThreads - 1) / kThreads);
@@ -112,6 +119,13 @@ static inline void cast_f16_to_f32(
     if (n == 0) return;
     detail::cast_f16_to_f32_kernel<<<detail::blocks_for((long long)n), detail::kThreads, 0, stream>>>(
         src, dst, n);
+}
+
+// Fill an int32 device array with [0, 1, ..., n-1] (a seqstart for unit-length
+// sequences). Writes n entries; callers wanting a length-n+1 seqstart pass n+1.
+static inline void fill_iota(int32_t* out, int n, hipStream_t stream) {
+    if (n <= 0) return;
+    detail::fill_iota_kernel<<<detail::blocks_for(n), detail::kThreads, 0, stream>>>(out, n);
 }
 
 // Output transpose (batch, heads, dim) -> (heads, batch, dim). No-op shape for

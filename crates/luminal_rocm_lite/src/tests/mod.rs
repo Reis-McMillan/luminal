@@ -8,9 +8,8 @@ mod consumed_buffer_tests;
 mod conv2d_rewrite;
 #[cfg(test)]
 mod hipblaslt_rewrite_tests;
-// flashinfer host op is NVIDIA-only — no rocmrc analog yet.
-// #[cfg(test)]
-// mod flashinfer;
+#[cfg(test)]
+mod flashinfer;
 #[cfg(test)]
 mod fusion;
 #[cfg(test)]

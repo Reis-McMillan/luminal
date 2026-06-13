@@ -4,11 +4,13 @@ use crate::rocmrc::hip::{HipStream, HipError, result};
 use luminal::{op::EgglogOp, prelude::*};
 mod rocblas;
 mod hipblaslt;
+pub mod flashinfer;
 
 pub type Ops = (
     hipblaslt::HipblasLt,
     hipblaslt::HipblasLtScaled,
-    // moe and flashinfer (cuda_lite siblings) not yet ported to ROCm.
+    flashinfer::FlashInferAttention,
+    // moe (cuda_lite sibling) not yet ported to ROCm.
 );
 
 #[cfg(test)]

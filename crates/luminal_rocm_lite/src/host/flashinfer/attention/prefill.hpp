@@ -51,7 +51,8 @@ using FmhaTraits = ck_tile::TileFmhaTraits<
     /*kHasBiasGrad=*/false,
     /*kStoreLSE=*/false,
     /*kHasDropout=*/false,
-    /*kDoFp8StaticQuant=*/false,
+    // CK develop changed this param from `bool kDoFp8StaticQuant` to a scoped enum.
+    /*QScaleEnum=*/ck_tile::BlockAttentionQuantScaleEnum::NO_SCALE,
     /*kBlockPerCu=*/-1>;
 
 // see https://github.com/ROCm/composable_kernel/blob/01cca38c8eccc490a64e631289736edda1eda720/include/ck_tile/ops/fmha/block/block_masking.hpp#L330
@@ -82,6 +83,12 @@ using FmhaEpilogue = ck_tile::Default2DEpilogue<
 // see https://github.com/ROCm/composable_kernel/blob/01cca38c8eccc490a64e631289736edda1eda720/include/ck_tile/ops/fmha/kernel/fmha_fwd_kernel.hpp#L113
 using FmhaKernel = ck_tile::FmhaFwdKernel<FmhaPipeline, FmhaEpilogue>;
 
+// launch_prefill instantiates FmhaKernel (the MFMA-only forward kernel) via make_kernel;
+// defining it triggers the gemm0-C -> gemm1-A register reuse that won't compile on WMMA.
+// So it's built only on non-WMMA archs; WMMA routes prefill through the split-KV path
+// (wrapper.cpp). Note: gating the *call* alone is insufficient — defining the function
+// semantically instantiates its body.
+#if !defined(LUMINAL_FMHA_WMMA)
 inline void launch_prefill(const fmha_args& a, hipStream_t stream) {
     // Causal window. For pure causal: left = -1 (unbounded past), right = 0.
     const ck_tile::index_t window_left  = (a.mask == MaskKind::Causal) ? -1 : -1;
@@ -115,5 +122,6 @@ inline void launch_prefill(const fmha_args& a, hipStream_t stream) {
     ck_tile::launch_kernel(
         sc, ck_tile::make_kernel<kBlockPerCu>(FmhaKernel{}, grids, blocks, 0, kargs));
 }
+#endif // !LUMINAL_FMHA_WMMA
 
 } // namespace luminal_fmha

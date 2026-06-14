@@ -124,9 +124,22 @@ int run_fmha(
     a.stride_v = kv_dim;                  a.nhead_stride_v = head_dim;
     a.stride_o = num_qo_heads * head_dim; a.nhead_stride_o = head_dim;
 
-    a.mask = MaskKind::Causal;
+    // Decode: the single new query attends to ALL cached KV (all in the past) — full
+    // attention, NO causal mask. With a causal mask the group-mode query sits at
+    // position 0 and collapses to attending only key 0 (degenerate softmax = V[0]).
+    // Prefill (varlen multi-token) keeps the causal mask.
+    a.mask = is_decode ? MaskKind::None : MaskKind::Causal;
 
-    if (is_decode) {
+    // On RDNA (WMMA) there is no dedicated WMMA prefill pipeline — the plain QR-KS-VS
+    // forward kernel can't bridge the gemm0-C -> gemm1-A fragment mismatch. The split-KV
+    // path (nwarp_sshuffle, P routed through LDS) handles any seqlen_q via group mode, so
+    // route BOTH decode and prefill through it. CDNA keeps the dedicated prefill kernel.
+    bool route_splitkv = is_decode;
+#if defined(LUMINAL_FMHA_WMMA)
+    route_splitkv = true;
+#endif
+
+    if (route_splitkv) {
         // Split-KV flash-decoding: pick a split count, carve fp32 partials
         // (o_acc + lse_acc) from the workspace, then run splitkv + combine.
         const int num_splits =
@@ -141,9 +154,14 @@ int run_fmha(
         a.o_acc_ptr    = o_acc;
         a.lse_acc_ptr  = lse_acc;
         launch_decode(a, stream);
-    } else {
+    }
+#if !defined(LUMINAL_FMHA_WMMA)
+    else {
+        // launch_prefill instantiates the MFMA-only forward kernel; compile it only on
+        // non-WMMA archs so its gemm0-C -> gemm1-A register reuse never instantiates here.
         launch_prefill(a, stream);
     }
+#endif
 
     // fp16 output -> fp32 (batch, heads, dim); caller transposes to (heads, batch, dim).
     cast_f16_to_f32(o_f16, output, (size_t)q_elems, stream);

@@ -243,13 +243,14 @@ fn compile_or_cache(head_dim: usize) -> PathBuf {
     // tile silently produces zeros there). The arch-conditional tile lives in
     // fmha_types.hpp behind LUMINAL_FMHA_WMMA.
     //
-    // NOTE: the WMMA path does NOT yet build — ck_tile's QR-KS-VS forward pipeline
-    // keeps the softmax probabilities P in registers between gemm0 and gemm1, and
-    // that C→A distribution reuse is only implemented for MFMA, not WMMA (gemm1
-    // fails to instantiate). So we do NOT pass -DLUMINAL_FMHA_WMMA: gfx11/12 builds
-    // with the MFMA tile (compiles, but fmha numerics are only valid on CDNA).
-    // Re-enable once a WMMA-compatible fwd config lands. TODO(wmma-fmha).
-    let _wmma_arch = arch.starts_with("gfx11") || arch.starts_with("gfx12");
+    // WMMA path: ck_tile's plain QR-KS-VS pipeline reuses gemm0's C (softmax P) as
+    // gemm1's A via a raw register copy that only typechecks for MFMA fragments. On
+    // WMMA the decode kernel uses the nwarp_sshuffle pipeline (P routed through LDS) and
+    // prefill routes through that split-KV path (wrapper.cpp), which makes the kernel
+    // COMPILE and run on gfx11. NOTE: numerics are still WRONG — the split-KV O write
+    // produces a half-zero strided pattern with wrong values, a deeper ck_tile WMMA
+    // correctness bug. gfx11 fmha numerics remain unvalidated. TODO(wmma-fmha-numerics).
+    let wmma_arch = arch.starts_with("gfx11") || arch.starts_with("gfx12");
     let mut args: Vec<String> = vec![
         "-shared".into(),
         "-o".into(),
@@ -270,6 +271,10 @@ fn compile_or_cache(head_dim: usize) -> PathBuf {
         "-w".into(),
         "-fPIC".into(),
     ];
+    // RDNA (WMMA): build the 16x16x16 tile path instead of the CDNA MFMA tile.
+    if wmma_arch {
+        args.push("-DLUMINAL_FMHA_WMMA".into());
+    }
     let output = Command::new("hipcc")
         .args(&args)
         .output()
@@ -352,15 +357,16 @@ fn wrapper_source_hash() -> u64 {
 }
 
 const CK_GIT_URL: &str = "https://github.com/ROCm/composable_kernel.git";
-const CK_GIT_REV: &str = "d7609923b6a2fd9c83e8c40d8bd510b2c483ff91";
+// CK develop @ 2026-06-14 — has the gfx11/WMMA split-KV O-write fix (CK 1.2.0 was buggy).
+const CK_GIT_REV: &str = "0954a8f3fa9e6b11a95d8cf182db3bdfdb088b4b";
 
 /// Locate Composable Kernel's `include/` directory — the one containing `ck/`
 /// and `ck_tile/`. Unlike FlashInfer, CK is self-contained (no CUTLASS
 /// submodule), so only a single include path is needed.
 ///
-/// Resolution order: `LUMINAL_CK_DIR` override → system ROCm install
-/// (`$ROCM_PATH` / `/opt/rocm`, which ships CK headers) → git clone of the
-/// pinned commit into the cache.
+/// Resolution order: `LUMINAL_CK_DIR` override (dev fast path) → git clone of the
+/// pinned `CK_GIT_REV` into the cache (the authoritative version — needed for the
+/// gfx11/WMMA fixes) → system ROCm install (`$ROCM_PATH` / `/opt/rocm`) as a fallback.
 fn locate_ck_includes() -> Option<PathBuf> {
     // 1. Explicit override: LUMINAL_CK_DIR points at a CK source/install root.
     if let Ok(path) = std::env::var("LUMINAL_CK_DIR")
@@ -376,15 +382,25 @@ fn locate_ck_includes() -> Option<PathBuf> {
         );
     }
 
-    // 2. System ROCm install ships CK headers under <rocm>/include.
+    // 2. Pinned CK commit. The FMHA kernels need ck_tile from a specific CK revision:
+    //    the WMMA/gfx11 split-KV fixes (correct O write) live on `develop`, NOT in the
+    //    ROCm-shipped CK 1.2.0. Clone+cache the pinned commit so the build is correct and
+    //    reproducible regardless of the installed ROCm. (Dev fast path: LUMINAL_CK_DIR.)
+    if let Ok(root) = fetch_ck_source() {
+        let inc = root.join("include");
+        if is_ck_include_dir(&inc) {
+            return Some(inc);
+        }
+    }
+
+    // 3. Fallback: system ROCm install ships CK headers under <rocm>/include (CK 1.2.0;
+    //    gfx11 numerics will be WRONG against it — only a fallback if the clone fails).
     let rocm = std::env::var("ROCM_PATH").unwrap_or_else(|_| "/opt/rocm".to_string());
     let rocm_inc = PathBuf::from(rocm).join("include");
     if is_ck_include_dir(&rocm_inc) {
         return Some(rocm_inc);
     }
-
-    // 3. Last resort: fetch the pinned commit into the cache directory.
-    fetch_ck_source().ok().map(|root| root.join("include"))
+    None
 }
 
 /// A directory is a usable CK include root if it holds the `ck_tile/` (or

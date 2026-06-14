@@ -22,11 +22,13 @@ namespace tile {
     constexpr ck_tile::index_t kWarpM = 16;
     constexpr ck_tile::index_t kWarpN = 16;
     constexpr ck_tile::index_t kWarpK = 16;
+    // Tile sizes matched to CK's gfx11 split-KV factory (fmha_fwd_splitkv.py hdim
+    // table): block <16,64,32,hdim,32,hdim>, <1,4,1> warps, 16x16x16 WMMA tile.
     constexpr ck_tile::index_t kM0 = 16;
-    constexpr ck_tile::index_t kN0 = 128;
-    constexpr ck_tile::index_t kK0 = 16;
+    constexpr ck_tile::index_t kN0 = 64;
+    constexpr ck_tile::index_t kK0 = 32;
     constexpr ck_tile::index_t kN1 = kHeadDim;
-    constexpr ck_tile::index_t kK1 = 16;
+    constexpr ck_tile::index_t kK1 = 32;
     constexpr ck_tile::index_t kQKHeadDim = kHeadDim;
 }
 
@@ -39,20 +41,28 @@ using FmhaShape = ck_tile::TileFmhaShape<
 
 // see: https://github.com/ROCm/composable_kernel/blob/01cca38c8eccc490a64e631289736edda1eda720/include/ck_tile/ops/fmha/block/block_masking.hpp#L330
 using FmhaMask    = ck_tile::SimplifiedGenericAttentionMask</*IsMasking=*/true>;
-// see: https://github.com/ROCm/composable_kernel/blob/01cca38c8eccc490a64e631289736edda1eda720/include/ck_tile/ops/fmha/block/variants.hpp#L137
-using FmhaVariant = ck_tile::StandardAttention;
+// CK's gfx11 fmha examples use ComposedAttention (with FAST_EXP2 scale folding), not
+// StandardAttention — the split-KV kernel's softmax has `#if CK_TILE_FMHA_FWD_FAST_EXP2`
+// branches that must agree with the variant. Mismatch yields wrong numerics.
+using FmhaVariant =
+    ck_tile::ComposedAttention<false * ck_tile::LOGITS_SOFT_CAP, CK_TILE_FMHA_FWD_FAST_EXP2>;
 
 // see: https://github.com/ROCm/composable_kernel/blob/01cca38c8eccc490a64e631289736edda1eda720/include/ck_tile/ops/fmha/pipeline/tile_fmha_traits.hpp#L152
+// Flags + full arg list matched to CK's gfx11 group split-KV example
+// (kPadHeadDim* = false; the trailing kMergeNumHeadGroupsSeqLenQ / kBlockPerCu / kHasSink
+// were defaulted before and must be spelled to match the known-good instantiation).
 using SplitKVTraits = ck_tile::TileFmhaFwdSplitKVTraits<
     /*kPadSeqLenQ=*/true, /*kPadSeqLenK=*/true,
-    /*kPadHeadDimQ=*/true, /*kPadHeadDimV=*/true,
+    /*kPadHeadDimQ=*/false, /*kPadHeadDimV=*/false,
     /*kHasLogitsSoftCap=*/false,
     /*BiasEnum=*/ck_tile::BlockAttentionBiasEnum::NO_BIAS,
     /*kHasBiasGrad=*/false,
     /*kStoreLSE=*/true,
     /*kDoFp8StaticQuant=*/false,
     /*kIsPagedKV=*/false,
-    /*kHasUnevenSplits=*/true>;
+    /*kHasUnevenSplits=*/true,
+    /*kMergeNumHeadGroupsSeqLenQ=*/false,
+    /*kBlockPerCu=*/-1>; // installed CK 1.2.0 has no kHasSink param (the clone adds it)
 
 // see: https://github.com/ROCm/composable_kernel/blob/01cca38c8eccc490a64e631289736edda1eda720/include/ck_tile/ops/fmha/pipeline/block_fmha_pipeline_problem.hpp#L258
 using SplitKVProblem = ck_tile::BlockFmhaFwdSplitKVPipelineProblem<
@@ -64,13 +74,23 @@ using SplitKVProblem = ck_tile::BlockFmhaFwdSplitKVPipelineProblem<
     /*ODataType=*/typename Cfg::OaccDataType,
     FmhaShape, /*kIsGroupMode=*/true, FmhaVariant, FmhaMask, SplitKVTraits>;
 
-// see: https://github.com/ROCm/composable_kernel/blob/01cca38c8eccc490a64e631289736edda1eda720/include/ck_tile/ops/fmha/pipeline/block_fmha_fwd_splitkv_pipeline_qr_ks_vs.hpp#L16
+// gemm0's C (softmax P) feeds gemm1's A. ck_tile's plain QR-KS-VS pipeline reuses
+// it via a raw register copy that only typechecks for MFMA fragments (C and A have
+// equal per-thread counts); on WMMA (gfx11/12) C=8/lane-along-M vs A=16/lane-along-K
+// x2-replicated, so the copy fails. The nwarp_sshuffle variant routes S through LDS
+// and recomputes P from the reloaded tile, decoupling the C and A layouts. CDNA keeps
+// the faster register-handoff pipeline.
+#if defined(LUMINAL_FMHA_WMMA)
+using SplitKVPipeline = ck_tile::BlockFmhaFwdSplitKVPipelineNWarpSShuffleQRKSVS<SplitKVProblem>;
+#else
 using SplitKVPipeline = ck_tile::BlockFmhaFwdSplitKVPipelineQRKSVS<SplitKVProblem>;
+#endif
 
 // see https://github.com/ROCm/composable_kernel/blob/01cca38c8eccc490a64e631289736edda1eda720/include/ck_tile/ops/epilogue/default_2d_epilogue.hpp
+// CK gfx11 split-KV example uses an unpadded 2D epilogue (kPadM/N = false).
 using SplitKVEpilogue = ck_tile::Default2DEpilogue<
     ck_tile::Default2DEpilogueProblem<typename Cfg::OaccDataType, typename Cfg::OaccDataType,
-                                      /*kPadM=*/true, /*kPadN=*/true>>;
+                                      /*kPadM=*/false, /*kPadN=*/false>>;
 
 // see https://github.com/ROCm/composable_kernel/blob/01cca38c8eccc490a64e631289736edda1eda720/include/ck_tile/ops/fmha/kernel/fmha_fwd_splitkv_kernel.hpp#L23
 using SplitKVKernel = ck_tile::FmhaFwdSplitKVKernel<SplitKVPipeline, SplitKVEpilogue>;
@@ -167,7 +187,9 @@ inline void launch_decode(const fmha_args& a, hipStream_t stream) {
         nhead_stride_lse_acc, nhead_stride_o_acc,
         /*batch_stride_k=*/0, /*batch_stride_v=*/0,
         split_stride_lse_acc, split_stride_o_acc,
-        window_left, window_right, static_cast<ck_tile::index_t>(a.mask));
+        window_left, window_right,
+        /*sink_size=*/0, // CK develop added sink_size before mask_type (sink_ptr defaults to null)
+        static_cast<ck_tile::index_t>(a.mask));
 
     const dim3 sk_grid = SplitKVKernel::GridSize(
         a.batch, a.nhead_q, a.nhead_k, a.max_seqlen_q, a.hdim_v, a.num_splits);

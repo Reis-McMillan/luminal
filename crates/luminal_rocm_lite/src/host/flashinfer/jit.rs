@@ -122,18 +122,12 @@ pub type PrefillRunFn = unsafe extern "C" fn(
     stream: *mut c_void,
 ) -> i32;
 
-// ── Embedded wrapper + kernel sources ──
-// Self-contained: every source is include_str!'d into the binary and written to
-// the cache dir at JIT time, so no source tree is needed on the target machine.
-
 const WRAPPER_CPP: &str = include_str!("wrapper.cpp");
 const WRAPPER_HPP: &str = include_str!("wrapper.hpp");
 const ATTN_FMHA_TYPES: &str = include_str!("attention/fmha_types.hpp");
 const ATTN_HELPERS: &str = include_str!("attention/helpers.hpp");
 const ATTN_PREFILL: &str = include_str!("attention/prefill.hpp");
 const ATTN_DECODE: &str = include_str!("attention/decode.hpp");
-
-// ── Loaded library handle ──
 
 pub struct FlashInferLib {
     // Keep the handle alive so the dlopen'd .so remains mapped.

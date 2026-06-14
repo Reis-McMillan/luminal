@@ -1,11 +1,4 @@
 // C ABI for the ck_tile-based ROCm attention wrapper.
-//
-// Symbol names and signatures are kept identical to the original FlashInfer
-// wrapper so the Rust side (jit.rs FlashInferLib::load + mod.rs execute) is
-// unchanged — only the implementations behind them (wrapper.cpp) differ.
-//
-// Boundary dtype is fp32 (matching luminal's current pipeline); wrapper.cpp
-// casts to/from fp16 internally for the ck_tile kernels.
 
 #pragma once
 

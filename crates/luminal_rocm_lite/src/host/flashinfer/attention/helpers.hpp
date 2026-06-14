@@ -1,14 +1,4 @@
 // Plain-HIP helper kernels for the ROCm attention path.
-//
-// Role: the glue kernels around the fmha launch. Most are straight CUDA->HIP
-// ports of the helpers at the bottom of the original wrapper.cu (the __global__
-// syntax is identical; only the stream type and fp16 intrinsics namespace
-// differ). The exception is gather_cast_kv, which is new: it bridges luminal's
-// paged KV pool to the contiguous, 16-bit buffers ck_tile's fmha expects.
-//
-// These are INTERNAL helpers (namespace luminal_fmha), not the .so ABI — the
-// extern "C" plan/run surface lives in wrapper.cpp. Kernels + launchers are
-// `static` so the header is safe to include without ODR concerns.
 
 #pragma once
 
@@ -46,20 +36,17 @@ static __global__ void gather_cast_kv_kernel(
     out[idx] = __float2half(pool[(long long)slot_indices[row] * row_dim + col]);
 }
 
-// (port of wrapper.cu cast_f32_to_f16_kernel)
 static __global__ void cast_f32_to_f16_kernel(const float* src, __half* dst, size_t n) {
     size_t i = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) dst[i] = __float2half(src[i]);
 }
 
-// (port of wrapper.cu cast_f16_to_f32_kernel)
 static __global__ void cast_f16_to_f32_kernel(const __half* src, float* dst, size_t n) {
     size_t i = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) dst[i] = __half2float(src[i]);
 }
 
 // (batch, heads, dim) -> (heads, batch, dim).
-// (port of wrapper.cu transpose_bhd_to_hbd_kernel)
 static __global__ void transpose_bhd_to_hbd_kernel(
     const float* src, float* dst, int batch, int heads, int dim) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -83,9 +70,7 @@ static inline int blocks_for(long long total) {
     return (int)((total + kThreads - 1) / kThreads);
 }
 
-} // namespace detail
-
-// ── Host launchers ───────────────────────────────────────────────────────────
+} 
 
 // Paged flat gather index -> physical slot indices (length c).
 static inline void extract_slot_indices(

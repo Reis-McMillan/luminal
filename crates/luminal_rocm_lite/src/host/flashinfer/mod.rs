@@ -21,15 +21,6 @@ use crate::{
     host::{DeviceBuffer, HostOp},
 };
 
-/// FlashInfer attention op (batch decode, fp32).
-///
-/// Replaces the full paged-GQA attention pattern (gather → broadcast → Q*K^T →
-/// scale → mask → softmax → *V) with a single FlashInfer fused kernel.
-///
-/// Graph inputs (7): Q, K_pool, V_pool, flat_gather_idx, mask, qo_indptr, kv_indptr.
-/// The egglog rule captures the first 5; `extract()` appends qo/kv indptrs after
-/// walking the e-graph from the mask. `batch_size` is derived at runtime from the
-/// indptr length (= num_sequences + 1).
 #[derive(Debug)]
 pub struct FlashInferAttention {
     pub num_qo_heads: usize,
@@ -41,8 +32,6 @@ pub struct FlashInferAttention {
     pub plan_info: Mutex<Vec<i64>>,
 }
 
-// SAFETY: PAGE_LOCKED_WORKSPACE holds a raw pointer to page-locked CUDA memory
-// allocated once and serialized via the CUDA stream that owns it.
 unsafe impl Send for FlashInferAttention {}
 unsafe impl Sync for FlashInferAttention {}
 
@@ -53,9 +42,6 @@ static PAGE_LOCKED_WORKSPACE: OnceLock<PageLockedPtr> = OnceLock::new();
 
 struct PageLockedPtr(*mut u8);
 
-// SAFETY: The pointer is page-locked CUDA memory allocated once via
-// posix_memalign + cudaHostRegister and only mutated during OnceLock
-// initialization.
 unsafe impl Send for PageLockedPtr {}
 unsafe impl Sync for PageLockedPtr {}
 
@@ -95,7 +81,7 @@ impl EgglogOp for FlashInferAttention {
 
     fn n_inputs(&self) -> usize {
         // Q, K_pool, V_pool, flat_gather_idx, mask (egglog IList).
-        // extract() appends qo_indptr + kv_indptr → 7 actual inputs at runtime.
+        // extract() appends qo_indptr + kv_indptr -> 7 actual inputs at runtime.
         5
     }
 
@@ -290,19 +276,16 @@ impl HostOp for FlashInferAttention {
         let (int_ws_ptr, _iws_guard) = int_ws.device_ptr(stream);
 
         // FlashInfer decode writes (total_q_tokens, heads, dim);
-        // luminal expects (heads, total_q_tokens, dim) — transpose at the end.
+        // luminal expects (heads, total_q_tokens, dim) - transpose at the end.
         let output_elems = total_q_tokens * self.num_qo_heads * self.head_dim;
         let temp_out_buf =
             unsafe { stream.alloc::<u8>(output_elems * std::mem::size_of::<f32>())? };
         let (temp_out_ptr, _tmp_guard) = temp_out_buf.device_ptr(stream);
 
-        // PrefillPlanInfo has 15 entries, DecodePlanInfo fewer — 16 is enough.
+        // PrefillPlanInfo has 15 entries, DecodePlanInfo fewer - 16 is enough.
         let mut plan_info_buf = [0i64; 16];
         let mut plan_info_len: i32 = 0;
 
-        // ── BatchDecode path ──
-        // Prefill kernels require fp16/bf16 tensor-core MMA; the C API returns -1
-        // when called from the fp32 pipeline. We only use decode here.
         let plan_ret = unsafe {
             (lib.plan)(
                 float_ws_ptr as *mut std::ffi::c_void,
@@ -361,7 +344,7 @@ impl HostOp for FlashInferAttention {
             ));
         }
 
-        // Transpose (total_q_tokens, heads, dim) → (heads, total_q_tokens, dim)
+        // Transpose (total_q_tokens, heads, dim) -> (heads, total_q_tokens, dim)
         unsafe {
             (lib.transpose_output)(
                 temp_out_ptr as *const f32,
@@ -389,20 +372,7 @@ impl HostOp for FlashInferAttention {
     }
 }
 
-// to-do: port to HIP
-// |      |      |
-// |      |      |
-// |      |      |
-// |      |      |
-// |      |      |
-// |      |      |
-// V      V      V
-
 /// Pin host memory for HIP async memcpy via `hipHostRegister`.
-///
-/// Resolve `hipHostRegister` from libamdhip64 via `dlopen`/`dlsym` so we don't
-/// need a build script or a `#[link]` directive. (This is the HIP analog of the
-/// CUDA port's `cudaHostRegister`; the ROCm runtime is libamdhip64, not cudart.)
 unsafe fn hip_pin_memory(ptr: *mut std::ffi::c_void, size: usize) -> i32 {
     type HostRegisterFn = unsafe extern "C" fn(*mut std::ffi::c_void, usize, u32) -> i32;
     static FN: OnceLock<usize> = OnceLock::new();

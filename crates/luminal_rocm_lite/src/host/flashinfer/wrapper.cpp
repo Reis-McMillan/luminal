@@ -53,7 +53,7 @@ struct Bump {
     }
 };
 
-// Single-thread CSR-from-mask kernel (port of wrapper.cu derive_indptr_kernel).
+// Single-thread CSR-from-mask kernel
 __global__ void derive_indptr_kernel(const float* mask, int32_t* indptr, int s, int c) {
     if (threadIdx.x != 0 || blockIdx.x != 0) return;
     indptr[0] = 0;
@@ -65,16 +65,6 @@ __global__ void derive_indptr_kernel(const float* mask, int32_t* indptr, int s, 
     }
 }
 
-// Shared fmha orchestration for both decode and prefill, group-mode (varlen).
-// total_q_tokens = packed query rows; total_slots = gathered KV rows. The packed
-// fp16 scratch is ragged: sequence b's Q/O rows live at [seqstart_q[b],
-// seqstart_q[b+1]) and its K/V rows at [seqstart_k[b], seqstart_k[b+1]).
-//   seqstart_q  device [batch+1] cumulative query rows; nullptr ⇒ synthesize
-//               [0,1,..,batch] (decode: one query token per sequence).
-//   seqstart_k  device [batch+1] cumulative KV rows (the gathered-pool indptr).
-//   max_seqlen_q  longest query length in the batch — sizes the launch grid.
-//   is_decode   route to the split-KV decode kernels (decode.hpp); else the
-//               plain prefill forward kernel (prefill.hpp). Two distinct kernels.
 int run_fmha(
     void* float_ws, size_t float_ws_size,
     const float* q, const float* k_pool, const float* v_pool,
@@ -191,7 +181,7 @@ int flashinfer_batch_decode_run(
     if (plan_info_len < 2) return -1; // plan() must run first
     const int total_slots   = (int)plan_info_vec[0];
     const int max_seqlen_q  = (int)plan_info_vec[1];
-    // Decode: one query token per sequence ⇒ seqstart_q synthesized in run_fmha;
+    // Decode: one query token per sequence -> seqstart_q synthesized in run_fmha;
     // kv_indptr is the per-sequence KV offset array (seqstart_k).
     return run_fmha(float_workspace, float_ws_size, q, k_cache, v_cache,
                     kv_indices, output,
@@ -224,7 +214,7 @@ int flashinfer_batch_prefill_plan(
     hipStream_t,
     int64_t* plan_info_out, int* plan_info_len_out) {
     plan_info_out[0] = (batch_size > 0) ? (int64_t)kv_indptr_h[batch_size] : 0;
-    // Longest query segment across the batch — sizes the launch grid in run().
+    // Longest query segment across the batch - sizes the launch grid in run().
     int max_seqlen_q = 0;
     for (int i = 0; i < batch_size; ++i) {
         const int len = qo_indptr_h[i + 1] - qo_indptr_h[i];

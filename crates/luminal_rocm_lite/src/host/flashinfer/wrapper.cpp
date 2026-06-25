@@ -87,19 +87,9 @@ int run_fmha(
     Bump bump(float_ws, float_ws_size);
 
     // Rectangular [batch, max_blocks] block table from the ragged CSR. page_block_size
-    // = 1, so a physical slot id == a page id and the real per-row length is seqlen_k.
-    //
-    // Pad each row up to the kernel's KV-tile width: the paged navigator's last tile
-    // spans a full kN0 columns even when seqlen_k isn't tile-aligned, so it reads
-    // block_indices past the real length. Without padding that runs off the table into
-    // workspace neighbours → garbage slot ids → OOB pool reads (the illegal address).
-    // build_block_table zero-fills the tail; slot 0 is valid pool memory and those
-    // positions are masked by kPadSeqLenK, so it's correct as well as safe. 128 covers
-    // both archs' kN0 (gfx11 decode=64, gfx9 decode/prefill=128).
-    const int real_max_blocks = (max_seqlen_k > 0) ? max_seqlen_k : 1;
-    constexpr int kBlockTileN = 128;
-    const int max_blocks =
-        ((real_max_blocks + kBlockTileN - 1) / kBlockTileN) * kBlockTileN;
+    // = 1, so a physical slot id == a page id and the per-row length is seqlen_k. Only
+    // the paged path (prefill) reads this; non-paged decode ignores it.
+    const int max_blocks = (max_seqlen_k > 0) ? max_seqlen_k : 1;
     int32_t* block_table = bump.take<int32_t>((size_t)batch_size * max_blocks);
     if (!block_table) return -2;
     build_block_table(kv_indptr_dev, kv_indices, block_table, batch_size, max_blocks, stream);
@@ -163,16 +153,8 @@ int run_fmha(
             a.seqstart_q_ptr = sq;
         }
         // Split-KV partials (fp32 o_acc + lse_acc) carved from the workspace.
-        int num_splits =
+        const int num_splits =
             decode_detail::choose_num_splits(batch_size, num_qo_heads, max_seqlen_q);
-        // choose_num_splits sizes splits purely by occupancy and ignores seqlen_k, so
-        // a short context can get more splits than it has KV tiles — the surplus splits
-        // are empty and the split-KV navigation reads out of bounds (illegal address).
-        // Cap by the KV-tile count, like FA/FlashInfer. A context below one kN0 tile
-        // can't be split → num_splits = 1.
-        const int num_kv_tiles = ck_tile::integer_divide_ceil(
-            max_seqlen_k > 0 ? max_seqlen_k : 1, decode_detail::tile::kN0);
-        if (num_splits > num_kv_tiles) num_splits = num_kv_tiles > 0 ? num_kv_tiles : 1;
         const size_t o_acc_elems =
             (size_t)num_qo_heads * num_splits * total_q_tokens * head_dim;
         const size_t lse_acc_elems = (size_t)num_qo_heads * num_splits * total_q_tokens;

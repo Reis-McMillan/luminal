@@ -45,13 +45,13 @@ pub type RunFn = unsafe extern "C" fn(
     int_workspace: *mut c_void,
     plan_info_vec: *mut i64,
     plan_info_len: i32,
-    q: *mut f32,
-    k_cache: *mut f32,
-    v_cache: *mut f32,
+    q: *mut c_void,
+    k_cache: *mut c_void,
+    v_cache: *mut c_void,
     kv_indptr: *mut i32,
     kv_indices: *mut i32,
     kv_last_page_len: *mut i32,
-    output: *mut f32,
+    output: *mut c_void,
     batch_size: i32,
     num_qo_heads: i32,
     num_kv_heads: i32,
@@ -105,14 +105,14 @@ pub type PrefillRunFn = unsafe extern "C" fn(
     int_workspace: *mut c_void,
     plan_info_vec: *mut i64,
     plan_info_len: i32,
-    q: *mut f32,
-    k_cache: *mut f32,
-    v_cache: *mut f32,
+    q: *mut c_void,
+    k_cache: *mut c_void,
+    v_cache: *mut c_void,
     qo_indptr: *mut i32,
     kv_indptr: *mut i32,
     kv_indices: *mut i32,
     kv_last_page_len: *mut i32,
-    output: *mut f32,
+    output: *mut c_void,
     total_num_rows: i32,
     batch_size: i32,
     num_qo_heads: i32,
@@ -141,8 +141,6 @@ pub struct FlashInferLib {
     pub prefill_run: PrefillRunFn,
 }
 
-// SAFETY: The library handle and function pointers are valid for the lifetime
-// of the process. All functions are called with proper HIP stream serialization.
 unsafe impl Send for FlashInferLib {}
 unsafe impl Sync for FlashInferLib {}
 
@@ -197,21 +195,30 @@ impl FlashInferLib {
     }
 }
 
+
+pub fn use_bf16() -> bool {
+    std::env::var("LUMINAL_FMHA_BF16")
+        .ok()
+        .map(|v| {
+            let v = v.trim();
+            !(v.is_empty() || v == "0" || v.eq_ignore_ascii_case("false"))
+        })
+        .unwrap_or(false)
+}
+
 /// Compile wrapper.cpp for the given HEAD_DIM, or return cached .so path.
 fn compile_or_cache(head_dim: usize) -> PathBuf {
     let cache_dir = cache_directory();
     std::fs::create_dir_all(&cache_dir).expect("Failed to create FlashInfer cache directory");
 
-    // Extract bundled wrapper + kernel sources to the cache so hipcc can compile them.
     let (wrapper_src_path, include_dir) = extract_wrapper_sources(&cache_dir);
 
     let arch = detect_rocm_arch();
-    // Bake a hash of the embedded sources into the .so name so old caches are
-    // discarded automatically when any embedded wrapper/kernel source changes.
     let wrapper_hash = wrapper_source_hash();
+    let dtype_tag = if use_bf16() { "bf16" } else { "fp16" };
     let so_name = format!(
-        "libflashinfer_hd{}_{}_w{:016x}.so",
-        head_dim, arch, wrapper_hash
+        "libflashinfer_hd{}_{}_{}_w{:016x}.so",
+        head_dim, arch, dtype_tag, wrapper_hash
     );
     let so_path = cache_dir.join(&so_name);
 
@@ -271,9 +278,11 @@ fn compile_or_cache(head_dim: usize) -> PathBuf {
         "-w".into(),
         "-fPIC".into(),
     ];
-    // RDNA (WMMA): build the 16x16x16 tile path instead of the CDNA MFMA tile.
     if wmma_arch {
         args.push("-DLUMINAL_FMHA_WMMA".into());
+    }
+    if use_bf16() {
+        args.push("-DLUMINAL_FMHA_BF16".into());
     }
     let output = Command::new("hipcc")
         .args(&args)
@@ -357,16 +366,14 @@ fn wrapper_source_hash() -> u64 {
 }
 
 const CK_GIT_URL: &str = "https://github.com/ROCm/composable_kernel.git";
-// CK develop @ 2026-06-14 — has the gfx11/WMMA split-KV O-write fix (CK 1.2.0 was buggy).
 const CK_GIT_REV: &str = "0954a8f3fa9e6b11a95d8cf182db3bdfdb088b4b";
 
 /// Locate Composable Kernel's `include/` directory — the one containing `ck/`
-/// and `ck_tile/`. Unlike FlashInfer, CK is self-contained (no CUTLASS
-/// submodule), so only a single include path is needed.
+/// and `ck_tile/`.
 ///
 /// Resolution order: `LUMINAL_CK_DIR` override (dev fast path) → git clone of the
-/// pinned `CK_GIT_REV` into the cache (the authoritative version — needed for the
-/// gfx11/WMMA fixes) → system ROCm install (`$ROCM_PATH` / `/opt/rocm`) as a fallback.
+/// pinned `CK_GIT_REV` into the cache → system ROCm install 
+/// (`$ROCM_PATH` / `/opt/rocm`) as a fallback.
 fn locate_ck_includes() -> Option<PathBuf> {
     // 1. Explicit override: LUMINAL_CK_DIR points at a CK source/install root.
     if let Ok(path) = std::env::var("LUMINAL_CK_DIR")
@@ -382,10 +389,6 @@ fn locate_ck_includes() -> Option<PathBuf> {
         );
     }
 
-    // 2. Pinned CK commit. The FMHA kernels need ck_tile from a specific CK revision:
-    //    the WMMA/gfx11 split-KV fixes (correct O write) live on `develop`, NOT in the
-    //    ROCm-shipped CK 1.2.0. Clone+cache the pinned commit so the build is correct and
-    //    reproducible regardless of the installed ROCm. (Dev fast path: LUMINAL_CK_DIR.)
     if let Ok(root) = fetch_ck_source() {
         let inc = root.join("include");
         if is_ck_include_dir(&inc) {
@@ -393,8 +396,6 @@ fn locate_ck_includes() -> Option<PathBuf> {
         }
     }
 
-    // 3. Fallback: system ROCm install ships CK headers under <rocm>/include (CK 1.2.0;
-    //    gfx11 numerics will be WRONG against it — only a fallback if the clone fails).
     let rocm = std::env::var("ROCM_PATH").unwrap_or_else(|_| "/opt/rocm".to_string());
     let rocm_inc = PathBuf::from(rocm).join("include");
     if is_ck_include_dir(&rocm_inc) {
@@ -411,9 +412,7 @@ fn is_ck_include_dir(inc: &Path) -> bool {
 
 /// Clone Composable Kernel at `CK_GIT_REV` into
 /// `~/.cache/luminal/flashinfer/ck-src/<short_rev>/` if absent, then return the
-/// CK root directory (the one containing `include/`). CK is self-contained — no
-/// CUTLASS submodule is required. One-time download; subsequent calls
-/// short-circuit on the directory check.
+/// CK root directory (the one containing `include/`).
 fn fetch_ck_source() -> Result<PathBuf, String> {
     let short = &CK_GIT_REV[..12];
     let cache_root = cache_directory().join("ck-src").join(short);

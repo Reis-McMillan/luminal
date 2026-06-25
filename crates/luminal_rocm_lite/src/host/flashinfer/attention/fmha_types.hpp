@@ -64,6 +64,15 @@ struct fmha_args {
     void*            lse_acc_ptr = nullptr;
     void*            o_acc_ptr   = nullptr;
     ck_tile::index_t num_splits  = 0;
+
+    // ── Paged-KV (in-kernel page navigation; mirrors CUDA FlashInfer's paged_kv_t).
+    // When block_table_ptr != nullptr, k_ptr/v_ptr are the KV *pool* and the kernel
+    // walks pages itself instead of reading a pre-gathered contiguous buffer. ──
+    const int32_t*   block_table_ptr          = nullptr; // [batch, batch_stride_block_table] physical page ids
+    ck_tile::index_t batch_stride_block_table = 0;       // row stride of block_table (>= max pages per seq)
+    ck_tile::index_t page_block_size          = 1;       // tokens per page (luminal cache uses 1)
+    ck_tile::index_t batch_stride_k           = 0;       // pool stride between pages = page_block_size*nhead_k*hdim
+    ck_tile::index_t batch_stride_v           = 0;
 };
 
 } // namespace luminal_fmha

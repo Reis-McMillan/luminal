@@ -13,6 +13,7 @@
 use std::sync::{Arc, Mutex};
 
 use rocmrc::hip::{HipStream, DevicePtr};
+use half::f16;
 use luminal::egglog_utils::{hlir_to_egglog, run_egglog};
 use luminal::op::{EgglogOp, IntoEgglogOp};
 use luminal::prelude::*;
@@ -98,6 +99,52 @@ fn run_reference_attention(
     rt.get_f32(out_t)
 }
 
+/// CPU fp32 reference matching `build_attention_graph`: full (non-causal) GQA
+/// attention where each of the `s` queries attends to all `c` context tokens.
+/// Avoids the GA search (which would profile — and currently crash on — the
+/// fp16 FlashInfer candidate). Output layout is (batch, heads, dim), matching
+/// `run_flashinfer`.
+///   q: (s, N_HEADS, HEAD_DIM)  k,v: (c, N_KV_HEADS, HEAD_DIM)   head h → kv head h/KV_GROUPS
+fn cpu_reference_attention(
+    q: &[f32],
+    k: &[f32],
+    v: &[f32],
+    batch_size: usize,
+    context_len: usize,
+) -> Vec<f32> {
+    let s = batch_size;
+    let c = context_len;
+    let scale = 1.0f32 / (HEAD_DIM as f32).sqrt();
+    let mut out = vec![0f32; s * HIDDEN]; // (s, N_HEADS, HEAD_DIM)
+    for i in 0..s {
+        for h in 0..N_HEADS {
+            let kvh = h / KV_GROUPS;
+            let mut scores = vec![0f32; c];
+            for (j, score) in scores.iter_mut().enumerate() {
+                let mut dot = 0f32;
+                for d in 0..HEAD_DIM {
+                    dot += q[i * HIDDEN + h * HEAD_DIM + d] * k[j * KV_DIM + kvh * HEAD_DIM + d];
+                }
+                *score = dot * scale;
+            }
+            let m = scores.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            let mut sum = 0f32;
+            for sc in scores.iter_mut() {
+                *sc = (*sc - m).exp();
+                sum += *sc;
+            }
+            for d in 0..HEAD_DIM {
+                let mut acc = 0f32;
+                for (j, &w) in scores.iter().enumerate() {
+                    acc += (w / sum) * v[j * KV_DIM + kvh * HEAD_DIM + d];
+                }
+                out[i * HIDDEN + h * HEAD_DIM + d] = acc;
+            }
+        }
+    }
+    out
+}
+
 // ─── Direct FlashInfer driver ────────────────────────────────────────────
 
 fn build_flat_gather_idx(kv_indices: &[i32]) -> Vec<i32> {
@@ -147,16 +194,30 @@ fn run_flashinfer(
     kv_indices: &[i32],
     batch_size: usize,
 ) -> Vec<f32> {
-    let q_buf = copy_to_dev(stream, q);
-    let k_buf = copy_to_dev(stream, k_cache);
-    let v_buf = copy_to_dev(stream, v_cache);
+    // ck_tile kernels read Q/K/V as fp16 (InputDataType), so convert host f32 → f16
+    // before upload — the device buffers must match the kernel's element type.
+    // (A bf16 build, LUMINAL_FMHA_BF16, would convert to bf16 here instead; the
+    // default is fp16.)
+    let q16: Vec<f16> = q.iter().map(|&x| f16::from_f32(x)).collect();
+    let mut k16: Vec<f16> = k_cache.iter().map(|&x| f16::from_f32(x)).collect();
+    let mut v16: Vec<f16> = v_cache.iter().map(|&x| f16::from_f32(x)).collect();
+    // Pad the KV pool with slack slots. The kernel's kN0 KV-tile reads past the active
+    // context (those rows are masked, but the addresses must still be mapped). A real
+    // paged cache pre-allocates num_slots >> context so this lands on other valid pool
+    // slots; the test's pool is exactly context-sized, so add slack to mimic that.
+    const POOL_PAD_SLOTS: usize = 128;
+    k16.resize(k16.len() + POOL_PAD_SLOTS * KV_DIM, f16::from_f32(0.0));
+    v16.resize(v16.len() + POOL_PAD_SLOTS * KV_DIM, f16::from_f32(0.0));
+    let q_buf = copy_to_dev(stream, &q16);
+    let k_buf = copy_to_dev(stream, &k16);
+    let v_buf = copy_to_dev(stream, &v16);
     let flat_idx = build_flat_gather_idx(kv_indices);
     let flat_idx_buf = copy_to_dev(stream, &flat_idx);
     let mask_buf = alloc_dev(stream, 4); // unused but reserved
     let qo_indptr: Vec<i32> = (0..=batch_size as i32).collect();
     let qo_indptr_buf = copy_to_dev(stream, &qo_indptr);
     let kv_indptr_buf = copy_to_dev(stream, kv_indptr);
-    let out_buf = alloc_dev(stream, batch_size * HIDDEN * 4);
+    let out_buf = alloc_dev(stream, batch_size * HIDDEN * 2); // fp16 output
 
     let fi = FlashInferAttention {
         num_qo_heads: N_HEADS,
@@ -184,14 +245,14 @@ fn run_flashinfer(
     let qo_ptr = qo_indptr_buf.device_ptr(stream).0 as u64;
     let kv_ptr = kv_indptr_buf.device_ptr(stream).0 as u64;
     let out_ptr = out_buf.device_ptr(stream).0 as u64;
-    buffers.insert(q_n, DeviceBuffer::new(q_ptr, q.len() * 4));
-    buffers.insert(k_n, DeviceBuffer::new(k_ptr, k_cache.len() * 4));
-    buffers.insert(v_n, DeviceBuffer::new(v_ptr, v_cache.len() * 4));
+    buffers.insert(q_n, DeviceBuffer::new(q_ptr, q.len() * 2)); // fp16
+    buffers.insert(k_n, DeviceBuffer::new(k_ptr, k16.len() * 2)); // fp16, padded pool
+    buffers.insert(v_n, DeviceBuffer::new(v_ptr, v16.len() * 2)); // fp16, padded pool
     buffers.insert(idx_n, DeviceBuffer::new(idx_ptr, flat_idx.len() * 4));
     buffers.insert(mask_n, DeviceBuffer::new(mask_ptr, 4));
     buffers.insert(qo_n, DeviceBuffer::new(qo_ptr, qo_indptr.len() * 4));
     buffers.insert(kv_n, DeviceBuffer::new(kv_ptr, kv_indptr.len() * 4));
-    buffers.insert(out_n, DeviceBuffer::new(out_ptr, batch_size * HIDDEN * 4));
+    buffers.insert(out_n, DeviceBuffer::new(out_ptr, batch_size * HIDDEN * 2)); // fp16
 
     let inputs = [q_n, k_n, v_n, idx_n, mask_n, qo_n, kv_n];
 
@@ -204,17 +265,18 @@ fn run_flashinfer(
         .expect("FlashInferAttention execute failed");
     stream.synchronize().unwrap();
 
-    // Output is (heads, batch, dim); reshape to (batch, heads, dim).
-    let mut out_bytes = vec![0u8; batch_size * HIDDEN * 4];
+    // Output is fp16 (heads, batch, dim); read back, widen to f32, reshape to (batch, heads, dim).
+    let mut out_bytes = vec![0u8; batch_size * HIDDEN * 2];
     unsafe {
         rocmrc::hip::result::memcpy_dtoh_async(&mut out_bytes, out_ptr, stream.hip_stream())
             .unwrap();
     }
     stream.synchronize().unwrap();
-    let raw: Vec<f32> = unsafe {
-        let mut bytes = std::mem::ManuallyDrop::new(out_bytes);
-        let len = bytes.len() / 4;
-        Vec::from_raw_parts(bytes.as_mut_ptr() as *mut f32, len, len)
+    let raw: Vec<f32> = {
+        let f16s = unsafe {
+            std::slice::from_raw_parts(out_bytes.as_ptr() as *const f16, out_bytes.len() / 2)
+        };
+        f16s.iter().map(|x| x.to_f32()).collect()
     };
     transpose_hbd_to_bhd(&raw, N_HEADS, batch_size, HEAD_DIM)
 }
@@ -300,7 +362,7 @@ fn flashinfer_bs1_ctx4() {
     let q = deterministic_f32(batch_size * HIDDEN, 0.011, 0.1);
     let k = deterministic_f32(context_len * KV_DIM, 0.021, 0.1);
     let v = deterministic_f32(context_len * KV_DIM, 0.031, 0.1);
-    let expected = run_reference_attention(&stream, &q, &k, &v, batch_size, context_len);
+    let expected = cpu_reference_attention(&q, &k, &v, batch_size, context_len);
     let kv_indptr = vec![0i32, context_len as i32];
     let kv_indices: Vec<i32> = (0..context_len as i32).collect();
     let result = run_flashinfer(&stream, &q, &k, &v, &kv_indptr, &kv_indices, batch_size);
@@ -535,14 +597,14 @@ fn run_flashinfer_prefill(
             std::ptr::null_mut(),
             plan_info.as_mut_ptr(),
             plan_len,
-            q_ptr as *mut f32,
-            k_ptr as *mut f32,
-            v_ptr as *mut f32,
+            q_ptr as *mut std::ffi::c_void,
+            k_ptr as *mut std::ffi::c_void,
+            v_ptr as *mut std::ffi::c_void,
             qo_ptr as *mut i32,
             kv_ptr as *mut i32,
             idx_ptr as *mut i32,
             std::ptr::null_mut(),
-            out_ptr as *mut f32,
+            out_ptr as *mut std::ffi::c_void,
             total_q as i32,
             batch_size as i32,
             N_HEADS as i32,

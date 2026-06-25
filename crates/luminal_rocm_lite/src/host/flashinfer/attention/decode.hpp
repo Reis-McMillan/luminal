@@ -19,13 +19,24 @@ using Cfg = FmhaTypeConfig;
 
 
 namespace tile {
+    // Split-KV uses a 16x16x16 matrix-core tile on BOTH archs (unlike the prefill
+    // forward kernel, which is 32x32x16 on MFMA). The block tile AND the warp
+    // distribution differ by arch, matched to CK's split-KV factory
+    // (fmha_fwd_splitkv.py hdim table):
+    //   gfx11 (WMMA): block <16,64,32,hdim,32,hdim>, warps <1,4,1>
+    //   gfx9  (MFMA): block <64,128,32,hdim,32,hdim>, warps <4,1,1>
+    // Using the gfx11 layout on MFMA fails the gemm0-C -> gemm1-A register handoff in
+    // the QRKSVS pipeline (BlockGemmARegBSmemCRegV2 "no viable '='" fragment mismatch).
     constexpr ck_tile::index_t kWarpM = 16;
     constexpr ck_tile::index_t kWarpN = 16;
     constexpr ck_tile::index_t kWarpK = 16;
-    // Tile sizes matched to CK's gfx11 split-KV factory (fmha_fwd_splitkv.py hdim
-    // table): block <16,64,32,hdim,32,hdim>, <1,4,1> warps, 16x16x16 WMMA tile.
+#if defined(LUMINAL_FMHA_WMMA)
     constexpr ck_tile::index_t kM0 = 16;
     constexpr ck_tile::index_t kN0 = 64;
+#else
+    constexpr ck_tile::index_t kM0 = 64;
+    constexpr ck_tile::index_t kN0 = 128;
+#endif
     constexpr ck_tile::index_t kK0 = 32;
     constexpr ck_tile::index_t kN1 = kHeadDim;
     constexpr ck_tile::index_t kK1 = 32;
@@ -33,10 +44,16 @@ namespace tile {
 }
 
 // see: https://github.com/ROCm/composable_kernel/blob/develop/include/ck_tile/ops/fmha/pipeline/tile_fmha_shape.hpp
+// Warp distribution is arch-specific (see tile:: comment): gfx11 <1,4,1>, gfx9 <4,1,1>.
 using FmhaShape = ck_tile::TileFmhaShape<
     ck_tile::sequence<tile::kM0, tile::kN0, tile::kK0, tile::kN1, tile::kK1, tile::kQKHeadDim>,
+#if defined(LUMINAL_FMHA_WMMA)
     ck_tile::sequence<1, 4, 1>, ck_tile::sequence<tile::kWarpM, tile::kWarpN, tile::kWarpK>,
     ck_tile::sequence<1, 4, 1>, ck_tile::sequence<tile::kWarpM, tile::kWarpN, tile::kWarpK>,
+#else
+    ck_tile::sequence<4, 1, 1>, ck_tile::sequence<tile::kWarpM, tile::kWarpN, tile::kWarpK>,
+    ck_tile::sequence<4, 1, 1>, ck_tile::sequence<tile::kWarpM, tile::kWarpN, tile::kWarpK>,
+#endif
     /*IsVLayoutRowMajor=*/true>;
 
 // see: https://github.com/ROCm/composable_kernel/blob/01cca38c8eccc490a64e631289736edda1eda720/include/ck_tile/ops/fmha/block/block_masking.hpp#L330
@@ -74,12 +91,6 @@ using SplitKVProblem = ck_tile::BlockFmhaFwdSplitKVPipelineProblem<
     /*ODataType=*/typename Cfg::OaccDataType,
     FmhaShape, /*kIsGroupMode=*/true, FmhaVariant, FmhaMask, SplitKVTraits>;
 
-// gemm0's C (softmax P) feeds gemm1's A. ck_tile's plain QR-KS-VS pipeline reuses
-// it via a raw register copy that only typechecks for MFMA fragments (C and A have
-// equal per-thread counts); on WMMA (gfx11/12) C=8/lane-along-M vs A=16/lane-along-K
-// x2-replicated, so the copy fails. The nwarp_sshuffle variant routes S through LDS
-// and recomputes P from the reloaded tile, decoupling the C and A layouts. CDNA keeps
-// the faster register-handoff pipeline.
 #if defined(LUMINAL_FMHA_WMMA)
 using SplitKVPipeline = ck_tile::BlockFmhaFwdSplitKVPipelineNWarpSShuffleQRKSVS<SplitKVProblem>;
 #else
@@ -179,13 +190,15 @@ inline void launch_decode(const fmha_args& a, hipStream_t stream) {
         a.batch, a.seqstart_q_ptr, a.seqstart_k_ptr, /*seqlen_k_ptr=*/nullptr,
         a.hdim_q, a.hdim_v, a.nhead_q, /*nhead_ratio_qk=*/a.nhead_q / a.nhead_k,
         a.num_splits,
-        /*block_table_ptr=*/nullptr, /*batch_stride_block_table=*/0, /*page_block_size=*/0,
+        // In-kernel paged KV (matches CUDA's paged_kv_t): walk the block table
+        // instead of reading a pre-gathered contiguous buffer.
+        a.block_table_ptr, a.batch_stride_block_table, a.page_block_size,
         /*is_gappy=*/false,
         a.scale_s, /*scale_p=*/1.0f, /*logits_soft_cap=*/0.0f,
         a.stride_q, a.stride_k, a.stride_v, /*stride_bias=*/0, stride_o_acc,
         a.nhead_stride_q, a.nhead_stride_k, a.nhead_stride_v, /*nhead_stride_bias=*/0,
         nhead_stride_lse_acc, nhead_stride_o_acc,
-        /*batch_stride_k=*/0, /*batch_stride_v=*/0,
+        /*batch_stride_k=*/a.batch_stride_k, /*batch_stride_v=*/a.batch_stride_v,
         split_stride_lse_acc, split_stride_o_acc,
         window_left, window_right,
         /*sink_size=*/0, // CK develop added sink_size before mask_type (sink_ptr defaults to null)

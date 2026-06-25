@@ -38,6 +38,15 @@ unsafe impl Sync for FlashInferAttention {}
 const FLOAT_WORKSPACE_SIZE: usize = 128 * 1024 * 1024; // 128 MiB
 const INT_WORKSPACE_SIZE: usize = 8 * 1024 * 1024; // 8 MiB
 
+
+pub fn kv_cache_dtype() -> DType {
+    if jit::use_bf16() {
+        DType::Bf16
+    } else {
+        DType::F16
+    }
+}
+
 static PAGE_LOCKED_WORKSPACE: OnceLock<PageLockedPtr> = OnceLock::new();
 
 struct PageLockedPtr(*mut u8);
@@ -124,18 +133,11 @@ impl EgglogOp for FlashInferAttention {
             plan_info: Mutex::new(Vec::new()),
         };
 
-        // Trigger JIT compilation (or .so cache hit) at extract time, not at
-        // first execute. Pays the ~30s cold-cache nvcc cost during compile
-        // rather than during the GA profiling loop, where it would dominate
-        // the candidate's measured runtime and make the GA reject FlashInfer.
         let _ = jit::ensure_compiled(head_dim);
 
-        // Walk the mask e-graph chain to recover qo_indptr / kv_indptr Input nodes.
-        // input_enodes: [Q, K_cache, V_cache, gather_idx, mask]
         let mask_node = input_enodes[4];
         let indptrs = find_indptrs::find_indptr_inputs(egraph, mask_node);
 
-        // Build final inputs: [Q, K_cache, V_cache, gather_idx, mask, qo_indptr, kv_indptr]
         let mut final_inputs = input_enodes;
         final_inputs.push(indptrs.qo_indptr);
         final_inputs.push(indptrs.kv_indptr);
@@ -189,11 +191,14 @@ impl HostOp for FlashInferAttention {
         let v_buf = get_buf("V_cache", inputs[2])?;
         let flat_idx_buf = get_buf("flat_gather_idx", inputs[3])?;
         // inputs[4] = mask (unused by FlashInfer — indptrs replace it)
+        let qo_indptr_buf = get_buf("qo_indptr", inputs[5])?;
         let kv_indptr_buf = get_buf("kv_indptr", inputs[6])?;
         let out_buf = get_buf("output", self_node)?;
 
         // Derive batch_size (num sequences) from r = indptr length.
         let batch_size = r.saturating_sub(1);
+        // Decode = exactly one query token per sequence; prefill = varlen multi-token.
+        let is_prefill = total_q_tokens > batch_size;
 
         let _span = span!(
             Level::TRACE,
@@ -241,19 +246,8 @@ impl HostOp for FlashInferAttention {
             Vec::from_raw_parts(v.as_mut_ptr() as *mut i32, r, r)
         };
 
-        // kv_last_page_len = [1; batch_size] when page_size=1.
-        let last_page_host: Vec<i32> = vec![1; batch_size];
-        let last_page_dev: HipSlice<u8> = if batch_size > 0 {
-            stream.clone_htod(unsafe {
-                std::slice::from_raw_parts(
-                    last_page_host.as_ptr() as *const u8,
-                    last_page_host.len() * std::mem::size_of::<i32>(),
-                )
-            })?
-        } else {
-            unsafe { stream.alloc::<u8>(1)? }
-        };
-        let (last_page_ptr, _lp_guard) = last_page_dev.device_ptr(stream);
+        // kv_last_page_len is unused by this wrapper (page_size=1; the ck_tile path
+        // gets per-sequence lengths from the indptrs), so we pass null below.
 
         // Global shared workspaces (allocated once across all op instances to
         // amortize the ~4ms first-allocation cost during GA profiling).
@@ -275,76 +269,148 @@ impl HostOp for FlashInferAttention {
         let (float_ws_ptr, _fws_guard) = float_ws.device_ptr(stream);
         let (int_ws_ptr, _iws_guard) = int_ws.device_ptr(stream);
 
-        // FlashInfer decode writes (total_q_tokens, heads, dim);
-        // luminal expects (heads, total_q_tokens, dim) - transpose at the end.
+        const ELEM_SIZE: usize = 2;
         let output_elems = total_q_tokens * self.num_qo_heads * self.head_dim;
-        let temp_out_buf =
-            unsafe { stream.alloc::<u8>(output_elems * std::mem::size_of::<f32>())? };
+        let temp_out_buf = unsafe { stream.alloc::<u8>(output_elems * ELEM_SIZE)? };
         let (temp_out_ptr, _tmp_guard) = temp_out_buf.device_ptr(stream);
 
-        // PrefillPlanInfo has 15 entries, DecodePlanInfo fewer - 16 is enough.
         let mut plan_info_buf = [0i64; 16];
         let mut plan_info_len: i32 = 0;
 
-        let plan_ret = unsafe {
-            (lib.plan)(
-                float_ws_ptr as *mut std::ffi::c_void,
-                FLOAT_WORKSPACE_SIZE,
-                int_ws_ptr as *mut std::ffi::c_void,
-                INT_WORKSPACE_SIZE,
-                page_locked_ws.0 as *mut std::ffi::c_void,
-                kv_indptr_host.as_ptr() as *mut i32,
-                batch_size as i32,
-                self.num_qo_heads as i32,
-                self.num_kv_heads as i32,
-                self.page_size as i32,
-                self.head_dim as i32,
-                hip_stream,
-                plan_info_buf.as_mut_ptr(),
-                &mut plan_info_len,
-            )
-        };
-        if plan_ret != 0 {
-            return Err(anyhow::anyhow!(
-                "FlashInfer decode plan failed with error code {plan_ret}"
-            ));
+        if is_prefill {
+            let mut qo_host_bytes = vec![0u8; r * 4];
+            unsafe {
+                result::memcpy_dtoh_async(
+                    &mut qo_host_bytes,
+                    qo_indptr_buf.ptr(),
+                    stream.hip_stream(),
+                )?;
+            }
+            stream.synchronize()?;
+            let qo_indptr_host: Vec<i32> = unsafe {
+                let mut v = std::mem::ManuallyDrop::new(qo_host_bytes);
+                Vec::from_raw_parts(v.as_mut_ptr() as *mut i32, r, r)
+            };
+
+            let plan_ret = unsafe {
+                (lib.prefill_plan)(
+                    float_ws_ptr as *mut std::ffi::c_void,
+                    FLOAT_WORKSPACE_SIZE,
+                    int_ws_ptr as *mut std::ffi::c_void,
+                    INT_WORKSPACE_SIZE,
+                    page_locked_ws.0 as *mut std::ffi::c_void,
+                    qo_indptr_host.as_ptr() as *mut i32,
+                    kv_indptr_host.as_ptr() as *mut i32,
+                    total_q_tokens as i32,
+                    batch_size as i32,
+                    self.num_qo_heads as i32,
+                    self.num_kv_heads as i32,
+                    self.page_size as i32,
+                    self.head_dim as i32,
+                    hip_stream,
+                    plan_info_buf.as_mut_ptr(),
+                    &mut plan_info_len,
+                )
+            };
+            if plan_ret != 0 {
+                return Err(anyhow::anyhow!(
+                    "FlashInfer prefill plan failed with error code {plan_ret}"
+                ));
+            }
+
+            let mut plan_info = self.plan_info.lock().unwrap();
+            plan_info.clear();
+            plan_info.extend_from_slice(&plan_info_buf[..plan_info_len as usize]);
+
+            let run_ret = unsafe {
+                (lib.prefill_run)(
+                    float_ws_ptr as *mut std::ffi::c_void,
+                    FLOAT_WORKSPACE_SIZE,
+                    int_ws_ptr as *mut std::ffi::c_void,
+                    plan_info.as_mut_ptr(),
+                    plan_info.len() as i32,
+                    q_buf.ptr() as *mut std::ffi::c_void,
+                    k_buf.ptr() as *mut std::ffi::c_void,
+                    v_buf.ptr() as *mut std::ffi::c_void,
+                    qo_indptr_buf.ptr() as *mut i32,
+                    kv_indptr_buf.ptr() as *mut i32,
+                    indices_ptr as *mut i32,
+                    std::ptr::null_mut(),
+                    temp_out_ptr as *mut std::ffi::c_void,
+                    total_q_tokens as i32,
+                    batch_size as i32,
+                    self.num_qo_heads as i32,
+                    self.num_kv_heads as i32,
+                    self.page_size as i32,
+                    self.head_dim as i32,
+                    hip_stream,
+                )
+            };
+            drop(plan_info);
+            if run_ret != 0 {
+                return Err(anyhow::anyhow!(
+                    "FlashInfer prefill run failed with error code {run_ret}"
+                ));
+            }
+        } else {
+            let plan_ret = unsafe {
+                (lib.plan)(
+                    float_ws_ptr as *mut std::ffi::c_void,
+                    FLOAT_WORKSPACE_SIZE,
+                    int_ws_ptr as *mut std::ffi::c_void,
+                    INT_WORKSPACE_SIZE,
+                    page_locked_ws.0 as *mut std::ffi::c_void,
+                    kv_indptr_host.as_ptr() as *mut i32,
+                    batch_size as i32,
+                    self.num_qo_heads as i32,
+                    self.num_kv_heads as i32,
+                    self.page_size as i32,
+                    self.head_dim as i32,
+                    hip_stream,
+                    plan_info_buf.as_mut_ptr(),
+                    &mut plan_info_len,
+                )
+            };
+            if plan_ret != 0 {
+                return Err(anyhow::anyhow!(
+                    "FlashInfer decode plan failed with error code {plan_ret}"
+                ));
+            }
+
+            let mut plan_info = self.plan_info.lock().unwrap();
+            plan_info.clear();
+            plan_info.extend_from_slice(&plan_info_buf[..plan_info_len as usize]);
+
+            let run_ret = unsafe {
+                (lib.run)(
+                    float_ws_ptr as *mut std::ffi::c_void,
+                    FLOAT_WORKSPACE_SIZE,
+                    int_ws_ptr as *mut std::ffi::c_void,
+                    plan_info.as_mut_ptr(),
+                    plan_info.len() as i32,
+                    q_buf.ptr() as *mut std::ffi::c_void,
+                    k_buf.ptr() as *mut std::ffi::c_void,
+                    v_buf.ptr() as *mut std::ffi::c_void,
+                    kv_indptr_buf.ptr() as *mut i32,
+                    indices_ptr as *mut i32,
+                    std::ptr::null_mut(),
+                    temp_out_ptr as *mut std::ffi::c_void,
+                    batch_size as i32,
+                    self.num_qo_heads as i32,
+                    self.num_kv_heads as i32,
+                    self.page_size as i32,
+                    self.head_dim as i32,
+                    hip_stream,
+                )
+            };
+            drop(plan_info);
+            if run_ret != 0 {
+                return Err(anyhow::anyhow!(
+                    "FlashInfer decode run failed with error code {run_ret}"
+                ));
+            }
         }
 
-        let mut plan_info = self.plan_info.lock().unwrap();
-        plan_info.clear();
-        plan_info.extend_from_slice(&plan_info_buf[..plan_info_len as usize]);
-
-        let run_ret = unsafe {
-            (lib.run)(
-                float_ws_ptr as *mut std::ffi::c_void,
-                FLOAT_WORKSPACE_SIZE,
-                int_ws_ptr as *mut std::ffi::c_void,
-                plan_info.as_mut_ptr(),
-                plan_info.len() as i32,
-                q_buf.ptr() as *mut f32,
-                k_buf.ptr() as *mut f32,
-                v_buf.ptr() as *mut f32,
-                kv_indptr_buf.ptr() as *mut i32,
-                indices_ptr as *mut i32,
-                last_page_ptr as *mut i32,
-                temp_out_ptr as *mut f32,
-                batch_size as i32,
-                self.num_qo_heads as i32,
-                self.num_kv_heads as i32,
-                self.page_size as i32,
-                self.head_dim as i32,
-                hip_stream,
-            )
-        };
-        drop(plan_info);
-
-        if run_ret != 0 {
-            return Err(anyhow::anyhow!(
-                "FlashInfer decode run failed with error code {run_ret}"
-            ));
-        }
-
-        // Transpose (total_q_tokens, heads, dim) -> (heads, total_q_tokens, dim)
         unsafe {
             (lib.transpose_output)(
                 temp_out_ptr as *const f32,
@@ -364,7 +430,9 @@ impl HostOp for FlashInferAttention {
     }
 
     fn output_bytes(&self) -> Expression {
-        self.output_size() * 4
+        // Output is the native 16-bit element type (the egg rule sets the op's dtype
+        // to the 16-bit Q/K/V island dtype); 2 bytes/element.
+        self.output_size() * 2
     }
 
     fn stats_name(&self) -> Option<&'static str> {

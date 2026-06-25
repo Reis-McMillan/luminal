@@ -22,20 +22,22 @@ int flashinfer_batch_decode_plan(
     hipStream_t stream,
     int64_t* plan_info_out, int* plan_info_len_out);
 
-// Run phase: gather paged KV -> contiguous fp16, cast, launch fmha, cast back.
+// Run phase (decode): gather paged 16-bit KV -> contiguous, launch split-KV fmha.
+// q/k_cache/v_cache/output are the native 16-bit element type (fp16 or bf16,
+// selected at JIT time); passed as void* — no casting at this boundary.
 // Output is written (batch, heads, dim); caller transposes separately.
 // Returns 0 on success, non-zero on failure.
 int flashinfer_batch_decode_run(
     void* float_workspace, size_t float_ws_size,
     void* int_workspace,
     int64_t* plan_info_vec, int plan_info_len,
-    float* q,                    // [batch_size, num_qo_heads, head_dim]
-    float* k_cache,              // [num_slots, num_kv_heads, head_dim] (NHD pool)
-    float* v_cache,              // same layout
+    void* q,                     // [batch_size, num_qo_heads, head_dim] 16-bit
+    void* k_cache,               // [num_slots, num_kv_heads, head_dim] (NHD pool) 16-bit
+    void* v_cache,               // same layout
     int32_t* kv_indptr,          // [batch_size + 1] (GPU)
     int32_t* kv_indices,         // [total_slots] physical slot indices (GPU)
     int32_t* kv_last_page_len,   // [batch_size]
-    float* output,               // [batch_size, num_qo_heads, head_dim]
+    void* output,                // [batch_size, num_qo_heads, head_dim] 16-bit
     int batch_size,
     int num_qo_heads, int num_kv_heads, int page_size, int head_dim,
     hipStream_t stream);
@@ -54,9 +56,9 @@ void flashinfer_derive_indptr_from_mask(
     const float* mask, int32_t* indptr, int s, int c,
     hipStream_t stream);
 
-// Transpose output from (batch, heads, dim) to (heads, batch, dim).
+// Transpose output (batch, heads, dim) -> (heads, batch, dim), 16-bit elements.
 void flashinfer_transpose_output(
-    const float* src, float* dst,
+    const void* src, void* dst,
     int batch, int heads, int dim,
     hipStream_t stream);
 
@@ -73,19 +75,20 @@ int flashinfer_batch_prefill_plan(
     hipStream_t stream,
     int64_t* plan_info_out, int* plan_info_len_out);
 
-// Run phase for batch prefill.
+// Run phase (prefill): in-kernel paged KV — k_cache/v_cache are the 16-bit pool,
+// walked via a block table built from kv_indptr/kv_indices (no host gather).
 int flashinfer_batch_prefill_run(
     void* float_workspace, size_t float_ws_size,
     void* int_workspace,
     int64_t* plan_info_vec, int plan_info_len,
-    float* q,                    // [total_num_rows, num_qo_heads, head_dim]
-    float* k_cache,              // [num_slots, num_kv_heads, head_dim] (NHD pool)
-    float* v_cache,              // same layout
+    void* q,                     // [total_num_rows, num_qo_heads, head_dim] 16-bit
+    void* k_cache,               // [num_slots, num_kv_heads, head_dim] (NHD pool) 16-bit
+    void* v_cache,               // same layout
     int32_t* qo_indptr,          // [batch_size + 1] (GPU)
     int32_t* kv_indptr,          // [batch_size + 1] (GPU)
-    int32_t* kv_indices,         // [total_slots] (GPU)
+    int32_t* kv_indices,         // [total_slots] physical slot indices (GPU)
     int32_t* kv_last_page_len,   // [batch_size]
-    float* output,               // [total_num_rows, num_qo_heads, head_dim]
+    void* output,                // [total_num_rows, num_qo_heads, head_dim] 16-bit
     int total_num_rows, int batch_size,
     int num_qo_heads, int num_kv_heads, int page_size, int head_dim,
     hipStream_t stream);

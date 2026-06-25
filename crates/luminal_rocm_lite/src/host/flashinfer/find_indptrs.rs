@@ -26,31 +26,23 @@ pub fn find_indptr_inputs<'a>(
     egraph: &'a SerializedEGraph,
     mask_node: &'a NodeId,
 ) -> IndptrNodes<'a> {
-    // Step 1: Validate mask = Add(scaled_allowed, neg_constant)
-    let mask_inputs = logical_binary_inputs(egraph, mask_node, "Add").unwrap_or_else(|| {
-        let (mask_label, mask_children) = &egraph.enodes[mask_node];
-        assert!(
-            mask_label == "Op",
-            "find_indptr_inputs: mask node is not an Op (label={mask_label})"
-        );
-        let mask_kind = resolve_first_node(egraph, &mask_children[0]);
-        let mask_kind_label = &egraph.enodes[mask_kind].0;
-        panic!("find_indptr_inputs: mask is not an Add (kind={mask_kind_label})");
-    });
-    assert_eq!(
-        mask_inputs.len(),
-        2,
-        "find_indptr_inputs: mask Add should have 2 inputs, got {}",
-        mask_inputs.len()
-    );
+    // Locate the indptr-bearing subtree, then BFS it for the indptr Input nodes.
+    //
+    // Preferred path: the raw mask is `Add(Mul(allowed, 1e10), -1e10)` — validate that
+    // structure and BFS from `allowed`.
+    //
+    // Fallback path: in the GA search space the mask's elementwise chain is fused into a
+    // `FusionStart…FusionEnd` region, so `mask_node` is a `FusionEnd` and the strict
+    // structural match doesn't apply. The egglog rule already matched the 1e10 mask
+    // pattern (that's why we're in extract()), so the mask is trusted — BFS straight from
+    // `mask_node`; generic `Op` traversal walks through FusionEnd/FusionStart/elementwise
+    // down to the leaf Inputs, which we match by their distinctive names below.
+    let reachable_inputs = match strict_allowed_subtree(egraph, mask_node) {
+        Some(allowed_node) => find_reachable_inputs(egraph, allowed_node),
+        None => find_reachable_inputs(egraph, mask_node),
+    };
 
-    // Step 2: One of the inputs should be Mul(allowed, Constant(1e10))
-    let (scaled_allowed, allowed_node) = find_1e10_mul(egraph, &mask_inputs);
-
-    // Step 3: BFS from `allowed` to find all reachable Input nodes
-    let reachable_inputs = find_reachable_inputs(egraph, allowed_node);
-
-    // Step 4: Match by name
+    // Match by name
     let mut qo_indptr: Option<&NodeId> = None;
     let mut kv_indptr: Option<&NodeId> = None;
 
@@ -67,9 +59,8 @@ pub fn find_indptr_inputs<'a>(
         panic!(
             "find_indptr_inputs: could not find 'qo_indptr' Input reachable from mask.\n\
              Found inputs: {:?}\n\
-             Mask node: {:?}\n\
-             Scaled allowed node: {:?}",
-            found_names, mask_node, scaled_allowed
+             Mask node: {:?}",
+            found_names, mask_node
         );
     });
 
@@ -78,9 +69,8 @@ pub fn find_indptr_inputs<'a>(
         panic!(
             "find_indptr_inputs: could not find 'kv_indptr' Input reachable from mask.\n\
              Found inputs: {:?}\n\
-             Mask node: {:?}\n\
-             Scaled allowed node: {:?}",
-            found_names, mask_node, scaled_allowed
+             Mask node: {:?}",
+            found_names, mask_node
         );
     });
 
@@ -90,11 +80,20 @@ pub fn find_indptr_inputs<'a>(
     }
 }
 
-fn find_1e10_mul<'a>(
+/// If the mask matches the raw `Add(Mul(allowed, Constant(1e10)), -1e10)` structure,
+/// return the `allowed` node (the indptr-bearing subtree). Returns None when the mask
+/// is fused (a `FusionEnd`) or otherwise doesn't match — the caller then BFSes from the
+/// mask node itself. Non-panicking: the strict path is an optimization, not a gate (the
+/// egglog rule already validated the 1e10 anchor before extraction).
+fn strict_allowed_subtree<'a>(
     egraph: &'a SerializedEGraph,
-    mask_add_inputs: &[&'a NodeId],
-) -> (&'a NodeId, &'a NodeId) {
-    for &input_node in mask_add_inputs {
+    mask_node: &'a NodeId,
+) -> Option<&'a NodeId> {
+    let mask_inputs = logical_binary_inputs(egraph, mask_node, "Add")?;
+    if mask_inputs.len() != 2 {
+        return None;
+    }
+    for &input_node in &mask_inputs {
         let Some(mul_inputs) = logical_binary_inputs(egraph, input_node, "Mul") else {
             continue;
         };
@@ -103,43 +102,11 @@ fn find_1e10_mul<'a>(
         }
         for (i, &inp) in mul_inputs.iter().enumerate() {
             if is_constant(egraph, inp, 1e10) {
-                let other = mul_inputs[1 - i];
-                return (input_node, other);
+                return Some(mul_inputs[1 - i]);
             }
         }
     }
-    let mut debug_info = String::new();
-    for (i, &input_node) in mask_add_inputs.iter().enumerate() {
-        let (label, children) = &egraph.enodes[input_node];
-        debug_info.push_str(&format!("\n  input[{i}]: label={label}"));
-        if label == "Op" && !children.is_empty() {
-            let kind = resolve_first_node(egraph, &children[0]);
-            let kind_label = &egraph.enodes[kind].0;
-            debug_info.push_str(&format!(" kind={kind_label}"));
-            for (j, kc) in egraph.enodes[kind].1.iter().enumerate() {
-                let kc_node = resolve_first_node(egraph, kc);
-                debug_info.push_str(&format!(" child[{j}]={}", egraph.enodes[kc_node].0));
-            }
-            if kind_label.contains("Mul") && children.len() >= 2 {
-                let mul_inputs = walk_ilist_simple(egraph, &children[1]);
-                for (j, &mi) in mul_inputs.iter().enumerate() {
-                    let (ml, mc) = &egraph.enodes[mi];
-                    debug_info.push_str(&format!("\n    mul_input[{j}]: label={ml}"));
-                    if ml == "Op" && !mc.is_empty() {
-                        let mk = resolve_first_node(egraph, &mc[0]);
-                        debug_info.push_str(&format!(" kind={}", egraph.enodes[mk].0));
-                        for (k, mkc) in egraph.enodes[mk].1.iter().enumerate() {
-                            let mkc_node = resolve_first_node(egraph, mkc);
-                            debug_info.push_str(&format!(" ch[{k}]={}", egraph.enodes[mkc_node].0));
-                        }
-                    }
-                }
-            }
-        }
-    }
-    panic!(
-        "find_indptr_inputs: could not find Mul(allowed, Constant(1e10)) in mask Add inputs.{debug_info}"
-    );
+    None
 }
 
 fn is_constant(egraph: &SerializedEGraph, node: &NodeId, expected: f32) -> bool {

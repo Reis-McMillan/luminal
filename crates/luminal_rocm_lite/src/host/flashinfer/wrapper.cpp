@@ -63,16 +63,20 @@ __global__ void derive_indptr_kernel(const float* mask, int32_t* indptr, int s, 
     }
 }
 
-// Both paths now use IN-KERNEL paged KV (mirrors CUDA FlashInfer's paged_kv_t):
-// k_pool/v_pool are the 16-bit cache pool and the kernel walks a block table built
-// from the ragged CSR (kv_indptr + kv_indices). No host-side gather anywhere.
-//   decode  → split-KV flash-decoding (seqlen_q == 1, synthesized seqstart_q)
-//   prefill → plain paged forward kernel (varlen, causal)
+// Decode and prefill take DIFFERENT KV paths:
+//   decode  → NON-paged split-KV flash-decoding. ck_tile's paged split-KV navigator
+//             faults on gfx11 (page_block_size=1 + WMMA), so we GATHER the active KV
+//             slots (kv_indices, CSR order) into a contiguous 16-bit workspace buffer
+//             and run the kernel non-paged (kIsPagedKV=false). Workspace residence
+//             also gives the kN0 KV-tile its over-read slack.
+//   prefill → in-kernel paged KV (FmhaFwdPagedKVKernel): k/v point straight at the
+//             pool, walked via a block table from the ragged CSR. (UNTESTED at runtime;
+//             likely shares the gfx11 paged issue.)
 int run_fmha(
     void* float_ws, size_t float_ws_size,
     const void* q, const void* k_pool, const void* v_pool,
-    const int32_t* kv_indices,     // physical slot ids in CSR order (block-table source)
-    const int32_t* kv_indptr_dev,  // device CSR offsets (block-table source)
+    const int32_t* kv_indices,     // physical slot ids in CSR order (gather / block-table source)
+    const int32_t* kv_indptr_dev,  // device CSR offsets (prefill block-table source)
     void* output,
     const int32_t* seqstart_q, const int32_t* seqstart_k,
     int total_q_tokens, int total_slots, int batch_size,
@@ -86,18 +90,8 @@ int run_fmha(
     const int kv_dim = num_kv_heads * head_dim;
     Bump bump(float_ws, float_ws_size);
 
-    // Rectangular [batch, max_blocks] block table from the ragged CSR. page_block_size
-    // = 1, so a physical slot id == a page id and the per-row length is seqlen_k. Only
-    // the paged path (prefill) reads this; non-paged decode ignores it.
-    const int max_blocks = (max_seqlen_k > 0) ? max_seqlen_k : 1;
-    int32_t* block_table = bump.take<int32_t>((size_t)batch_size * max_blocks);
-    if (!block_table) return -2;
-    build_block_table(kv_indptr_dev, kv_indices, block_table, batch_size, max_blocks, stream);
-
     fmha_args a{};
     a.q_ptr = q;
-    a.k_ptr = k_pool;   // pool used directly — the kernel pages through it
-    a.v_ptr = v_pool;
     a.o_ptr = output;
     a.lse_ptr = nullptr;
     a.seqstart_q_ptr = seqstart_q;
@@ -111,18 +105,12 @@ int run_fmha(
     a.hdim_v = head_dim;
     a.scale_s = 1.0f / std::sqrt((float)head_dim);
 
-    // Q and O are contiguous packed [tokens, nhead, hdim] (NHD); no batch stride in
-    // group mode (seqstart_* does the per-sequence addressing). K/V live in the paged
-    // pool: stride_k is the within-page row stride, batch_stride_k the page stride.
+    // NHD packed strides — shared by the contiguous decode scratch and the paged pool
+    // (both are [rows, nhead_k, hdim] with row stride kv_dim, head stride head_dim).
     a.stride_q = num_qo_heads * head_dim; a.nhead_stride_q = head_dim;
     a.stride_o = num_qo_heads * head_dim; a.nhead_stride_o = head_dim;
     a.stride_k = kv_dim; a.nhead_stride_k = head_dim;
     a.stride_v = kv_dim; a.nhead_stride_v = head_dim;
-    a.block_table_ptr = block_table;
-    a.batch_stride_block_table = max_blocks;
-    a.page_block_size = 1;
-    a.batch_stride_k = kv_dim;   // stride between physical pages in the pool
-    a.batch_stride_v = kv_dim;
 
     // Decode: the single new query attends to ALL cached KV (full attention, no causal
     // mask — a causal mask would collapse the group-mode position-0 query to key 0).
@@ -130,10 +118,9 @@ int run_fmha(
     a.mask = is_decode ? MaskKind::None : MaskKind::Causal;
 
     // Stage Q into workspace scratch. The M-tile loads kM0 query rows even when
-    // seqlen_q < kM0 (e.g. decode: 1 row, kM0=16), over-running a tight external Q
-    // buffer → illegal address. Copying into the 128 MiB workspace gives the trailing
-    // slack the over-read needs (the surplus rows are masked by kPadSeqLenQ). Q is
-    // small (one token per sequence in decode), so the copy is cheap.
+    // seqlen_q < kM0 (decode: 1 row, kM0=16), over-running a tight external Q buffer →
+    // illegal address. The 128 MiB workspace gives the over-read its slack (surplus
+    // rows are masked by kPadSeqLenQ). Q is small, so the copy is cheap.
     {
         const size_t q_stride = (size_t)num_qo_heads * head_dim;
         const size_t q_elems = (size_t)total_q_tokens * q_stride;
@@ -145,6 +132,16 @@ int run_fmha(
     }
 
     if (is_decode) {
+        // Gather the scattered cache slots into contiguous 16-bit workspace scratch
+        // (CSR order via kv_indices), then run the kernel non-paged. Workspace
+        // residence also absorbs the kN0 KV-tile over-read past seqlen_k.
+        InputDataType* k_scr = bump.take<InputDataType>((size_t)total_slots * kv_dim);
+        InputDataType* v_scr = bump.take<InputDataType>((size_t)total_slots * kv_dim);
+        if (!k_scr || !v_scr) return -2; // workspace too small
+        gather_rows_16(k_pool, kv_indices, k_scr, total_slots, kv_dim, stream);
+        gather_rows_16(v_pool, kv_indices, v_scr, total_slots, kv_dim, stream);
+        a.k_ptr = k_scr; a.v_ptr = v_scr;
+
         // One query token per sequence: build the trivial seqstart_q = [0,1,..,batch].
         if (!a.seqstart_q_ptr) {
             int32_t* sq = bump.take<int32_t>(batch_size + 1);
@@ -166,6 +163,18 @@ int run_fmha(
         a.lse_acc_ptr = lse_acc;
         launch_decode(a, stream);
     } else {
+        // Prefill: in-kernel paged KV — k/v point at the pool, walked via the block
+        // table built from the ragged CSR. page_block_size=1 ⇒ a slot id is a page id.
+        const int max_blocks = (max_seqlen_k > 0) ? max_seqlen_k : 1;
+        int32_t* block_table = bump.take<int32_t>((size_t)batch_size * max_blocks);
+        if (!block_table) return -2;
+        build_block_table(kv_indptr_dev, kv_indices, block_table, batch_size, max_blocks, stream);
+        a.k_ptr = k_pool; a.v_ptr = v_pool;
+        a.block_table_ptr = block_table;
+        a.batch_stride_block_table = max_blocks;
+        a.page_block_size = 1;
+        a.batch_stride_k = kv_dim;   // stride between physical pages in the pool
+        a.batch_stride_v = kv_dim;
         launch_prefill(a, stream);
     }
     return 0;

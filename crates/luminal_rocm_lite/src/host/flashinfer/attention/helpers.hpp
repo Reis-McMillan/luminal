@@ -22,6 +22,21 @@ static __global__ void extract_slot_indices_kernel(
     if (i < c) out[i] = flat_idx[i * kv_dim] / kv_dim;
 }
 
+// Gather paged rows from a 16-bit KV pool into a contiguous 16-bit buffer (decode
+// path): out[row, :] = pool[slot_indices[row], :], row_dim = num_kv_heads*head_dim.
+// Pure 2-byte move — dtype-agnostic (fp16/bf16). Materializes the scattered cache
+// slots in CSR order so the non-paged split-KV kernel reads contiguous KV.
+static __global__ void gather_rows_16_kernel(
+    const uint16_t* pool, const int32_t* slot_indices, uint16_t* out,
+    int num_rows, int row_dim) {
+    long long idx = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    long long total = (long long)num_rows * row_dim;
+    if (idx >= total) return;
+    int row = (int)(idx / row_dim);
+    int col = (int)(idx % row_dim);
+    out[idx] = pool[(long long)slot_indices[row] * row_dim + col];
+}
+
 // (batch, heads, dim) -> (heads, batch, dim), 16-bit elements.
 static __global__ void transpose_bhd_to_hbd_kernel(
     const uint16_t* src, uint16_t* dst, int batch, int heads, int dim) {
@@ -71,6 +86,17 @@ static inline void extract_slot_indices(
     if (c <= 0) return;
     detail::extract_slot_indices_kernel<<<detail::blocks_for(c), detail::kThreads, 0, stream>>>(
         flat_idx, out, c, kv_dim);
+}
+
+// Gather a 16-bit paged KV pool into a contiguous 16-bit buffer (decode path).
+static inline void gather_rows_16(
+    const void* pool, const int32_t* slot_indices, void* out,
+    int num_rows, int row_dim, hipStream_t stream) {
+    long long total = (long long)num_rows * row_dim;
+    if (total <= 0) return;
+    detail::gather_rows_16_kernel<<<detail::blocks_for(total), detail::kThreads, 0, stream>>>(
+        static_cast<const uint16_t*>(pool), slot_indices, static_cast<uint16_t*>(out),
+        num_rows, row_dim);
 }
 
 // Fill an int32 device array with [0, 1, ..., n-1].

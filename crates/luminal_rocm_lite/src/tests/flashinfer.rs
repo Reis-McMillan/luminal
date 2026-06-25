@@ -199,15 +199,8 @@ fn run_flashinfer(
     // (A bf16 build, LUMINAL_FMHA_BF16, would convert to bf16 here instead; the
     // default is fp16.)
     let q16: Vec<f16> = q.iter().map(|&x| f16::from_f32(x)).collect();
-    let mut k16: Vec<f16> = k_cache.iter().map(|&x| f16::from_f32(x)).collect();
-    let mut v16: Vec<f16> = v_cache.iter().map(|&x| f16::from_f32(x)).collect();
-    // Pad the KV pool with slack slots. The kernel's kN0 KV-tile reads past the active
-    // context (those rows are masked, but the addresses must still be mapped). A real
-    // paged cache pre-allocates num_slots >> context so this lands on other valid pool
-    // slots; the test's pool is exactly context-sized, so add slack to mimic that.
-    const POOL_PAD_SLOTS: usize = 128;
-    k16.resize(k16.len() + POOL_PAD_SLOTS * KV_DIM, f16::from_f32(0.0));
-    v16.resize(v16.len() + POOL_PAD_SLOTS * KV_DIM, f16::from_f32(0.0));
+    let k16: Vec<f16> = k_cache.iter().map(|&x| f16::from_f32(x)).collect();
+    let v16: Vec<f16> = v_cache.iter().map(|&x| f16::from_f32(x)).collect();
     let q_buf = copy_to_dev(stream, &q16);
     let k_buf = copy_to_dev(stream, &k16);
     let v_buf = copy_to_dev(stream, &v16);
@@ -246,8 +239,8 @@ fn run_flashinfer(
     let kv_ptr = kv_indptr_buf.device_ptr(stream).0 as u64;
     let out_ptr = out_buf.device_ptr(stream).0 as u64;
     buffers.insert(q_n, DeviceBuffer::new(q_ptr, q.len() * 2)); // fp16
-    buffers.insert(k_n, DeviceBuffer::new(k_ptr, k16.len() * 2)); // fp16, padded pool
-    buffers.insert(v_n, DeviceBuffer::new(v_ptr, v16.len() * 2)); // fp16, padded pool
+    buffers.insert(k_n, DeviceBuffer::new(k_ptr, k16.len() * 2)); // fp16
+    buffers.insert(v_n, DeviceBuffer::new(v_ptr, v16.len() * 2)); // fp16
     buffers.insert(idx_n, DeviceBuffer::new(idx_ptr, flat_idx.len() * 4));
     buffers.insert(mask_n, DeviceBuffer::new(mask_ptr, 4));
     buffers.insert(qo_n, DeviceBuffer::new(qo_ptr, qo_indptr.len() * 4));
@@ -1050,7 +1043,6 @@ fn flashinfer_rule_fires_on_mha() {
 // least one offspring. That is the end-to-end check we actually want.
 
 #[test]
-#[ignore = "pre-existing: find_indptrs panics on a FusionEnd-wrapped mask (expects raw Add), so FlashInfer extraction is never reached — needs a find_indptrs fix, unrelated to the fmha kernels"]
 fn flashinfer_extraction_reachable_from_search_space() {
     use rand::SeedableRng;
     use rand::rngs::StdRng;

@@ -25,6 +25,14 @@
 //!   2. Load transformer, run the diffusion loop, **drop the runtime**.
 //!   3. Load VAE, decode, dump PNG.
 
+// glibc malloc degrades into an allocating livelock inside
+// nvrtcCompileProgram after heavy search heap churn (hundreds of
+// thousands of compiles). jemalloc built with unprefixed symbols
+// interposes malloc for the whole process, including dlopened CUDA
+// libraries like libnvrtc — a Rust-only global allocator would not.
+#[global_allocator]
+static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 mod hf;
 #[allow(dead_code)]
 mod quant;
@@ -51,6 +59,10 @@ fn env_usize(name: &str, default: usize) -> usize {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(default)
+}
+
+fn search_options() -> CompileOptions {
+    CompileOptions::default().search_graph_limit(env_usize("SEARCH_ITERS", 5))
 }
 
 fn env_f32(name: &str, default: f32) -> f32 {
@@ -155,18 +167,20 @@ fn run_text_encoder(prompt: &str) -> Result<Vec<f32>, Box<dyn std::error::Error>
     let features = encoder.forward(input_ids, pos_ids, attention_mask).output();
     // Memory-budget enforcement is opt-in (the estimator over-counts; see
     // the matching comment in `run_vae_only`). Set `TEXT_MEM_GIB` to opt in.
-    if let Ok(g) = std::env::var("TEXT_MEM_GIB").and_then(|s| {
-        s.parse::<usize>()
-            .map_err(|_| std::env::VarError::NotPresent)
-    }) {
-        cx.build_search_space::<CudaRuntime>(CompileOptions::default().max_memory_gib(g));
-    } else {
-        cx.build_search_space::<CudaRuntime>(CompileOptions::default());
-    }
+    let max_memory_gib = std::env::var("TEXT_MEM_GIB")
+        .and_then(|s| {
+            s.parse::<usize>()
+                .map_err(|_| std::env::VarError::NotPresent)
+        })
+        .ok();
+    cx.build_search_space::<CudaRuntime>(CompileOptions::default());
 
     let ctx = CudaContext::new(0).unwrap();
     let stream = ctx.default_stream();
     let mut runtime = CudaRuntime::initialize(stream);
+    if let Some(g) = max_memory_gib {
+        runtime.set_max_memory_gib(g);
+    }
 
     println!(
         "Loading {} text encoder shards (~48 GB BF16)...",
@@ -187,7 +201,7 @@ fn run_text_encoder(prompt: &str) -> Result<Vec<f32>, Box<dyn std::error::Error>
 
     println!("Compiling text encoder...");
     let t0 = Instant::now();
-    runtime = cx.search(runtime, CompileOptions::new(env_usize("SEARCH_ITERS", 5)));
+    runtime = cx.search(runtime, search_options());
     println!("  compile done in {:.1}s", t0.elapsed().as_secs_f64());
 
     println!("Encoding prompt...");
@@ -295,18 +309,20 @@ fn run_full_pipeline(
         .output();
 
     println!("Building search space (this is the long step — many minutes for the full DiT)...");
-    if let Ok(g) = std::env::var("TX_MEM_GIB").and_then(|s| {
-        s.parse::<usize>()
-            .map_err(|_| std::env::VarError::NotPresent)
-    }) {
-        cx.build_search_space::<CudaRuntime>(CompileOptions::default().max_memory_gib(g));
-    } else {
-        cx.build_search_space::<CudaRuntime>(CompileOptions::default());
-    }
+    let max_memory_gib = std::env::var("TX_MEM_GIB")
+        .and_then(|s| {
+            s.parse::<usize>()
+                .map_err(|_| std::env::VarError::NotPresent)
+        })
+        .ok();
+    cx.build_search_space::<CudaRuntime>(CompileOptions::default());
 
     let ctx = CudaContext::new(0).unwrap();
     let stream = ctx.default_stream();
     let mut runtime = CudaRuntime::initialize(stream);
+    if let Some(g) = max_memory_gib {
+        runtime.set_max_memory_gib(g);
+    }
 
     println!(
         "Loading {} transformer shards (~{:.1} GB BF16)...",
@@ -345,10 +361,9 @@ fn run_full_pipeline(
     {
         use rand::SeedableRng;
         let mut rng = rand::rngs::SmallRng::seed_from_u64(seed);
-        let opts = luminal::graph::CompileOptions::new(env_usize("SEARCH_ITERS", 5));
-        runtime = cx.search_with_rng(runtime, opts, &mut rng);
+        runtime = cx.search_with_rng(runtime, search_options(), &mut rng);
     } else {
-        runtime = cx.search(runtime, CompileOptions::new(env_usize("SEARCH_ITERS", 5)));
+        runtime = cx.search(runtime, search_options());
     }
     println!("  compile done in {:.1}s", t0.elapsed().as_secs_f64());
 
@@ -401,21 +416,23 @@ fn run_full_pipeline(
     let latent_in = cx.named_tensor("latent", (LATENT_CHANNELS, h_lat, w_lat));
     let decoder = VaeDecoder::new(&mut cx);
     let out = decoder.forward(latent_in).output();
-    if let Ok(g) = std::env::var("VAE_MEM_GIB").and_then(|s| {
-        s.parse::<usize>()
-            .map_err(|_| std::env::VarError::NotPresent)
-    }) {
-        cx.build_search_space::<CudaRuntime>(CompileOptions::default().max_memory_gib(g));
-    } else {
-        cx.build_search_space::<CudaRuntime>(CompileOptions::default());
-    }
+    let max_memory_gib = std::env::var("VAE_MEM_GIB")
+        .and_then(|s| {
+            s.parse::<usize>()
+                .map_err(|_| std::env::VarError::NotPresent)
+        })
+        .ok();
+    cx.build_search_space::<CudaRuntime>(CompileOptions::default());
 
     let ctx = CudaContext::new(0).unwrap();
     let stream = ctx.default_stream();
     let mut runtime = CudaRuntime::initialize(stream);
+    if let Some(g) = max_memory_gib {
+        runtime.set_max_memory_gib(g);
+    }
     runtime.load_safetensors(&cx, vae_path.to_str().unwrap());
     runtime.set_data(latent_in, vae_input);
-    runtime = cx.search(runtime, CompileOptions::new(env_usize("SEARCH_ITERS", 5)));
+    runtime = cx.search(runtime, search_options());
     runtime.execute(&cx.dyn_map);
     let img = runtime.get_f32(out);
     // VaeDecoder output is in roughly [-1, 1] range. Diffusers'

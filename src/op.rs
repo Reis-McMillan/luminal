@@ -7,6 +7,56 @@ use crate::prelude::*;
 use as_any::{AsAny, Downcast};
 use rustc_hash::FxHashMap;
 
+#[derive(Clone, Copy)]
+pub struct ProfileBucketContext<'a> {
+    pub dim_buckets: &'a FxHashMap<char, Vec<DimBucket>>,
+    pub bucket_indices: &'a FxHashMap<char, usize>,
+    pub representative_dyn_map: &'a FxHashMap<char, usize>,
+}
+
+#[derive(Clone, Copy)]
+pub struct CandidateFilterContext<'a> {
+    pub search_options: &'a crate::graph::CompileOptions,
+    pub dyn_map: &'a FxHashMap<char, usize>,
+    pub bucket_context: Option<ProfileBucketContext<'a>>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct CandidateFilterResult {
+    pub accepted: bool,
+    pub display: Option<String>,
+}
+
+impl CandidateFilterResult {
+    pub fn accept() -> Self {
+        Self {
+            accepted: true,
+            display: None,
+        }
+    }
+
+    pub fn accept_with_display(display: impl Into<String>) -> Self {
+        Self {
+            accepted: true,
+            display: Some(display.into()),
+        }
+    }
+
+    pub fn reject() -> Self {
+        Self {
+            accepted: false,
+            display: None,
+        }
+    }
+
+    pub fn reject_with_display(display: impl Into<String>) -> Self {
+        Self {
+            accepted: false,
+            display: Some(display.into()),
+        }
+    }
+}
+
 pub trait Runtime {
     type Ops: IntoEgglogOp;
     type CompileArg;
@@ -26,6 +76,18 @@ pub trait Runtime {
     {
         vec![]
     }
+    /// Backend-provided egglog text spliced in immediately after the op
+    /// constructor definitions and before the rewrite rules. Core keeps this
+    /// empty; runtimes can use it to declare shared egglog relations/functions
+    /// that their rewrite rules read and write across multiple ops — declarations
+    /// that the per-op rewrite hook cannot emit exactly-once — without adding
+    /// those declarations to Luminal core.
+    fn extra_egglog() -> String
+    where
+        Self: Sized,
+    {
+        String::new()
+    }
     fn initialize(arg: Self::CompileArg) -> Self;
     fn load_llir(&mut self, llir_graph: &LLIRGraph);
     fn execute(&mut self, dyn_map: &FxHashMap<char, usize>) -> Self::ExecReturn;
@@ -36,6 +98,20 @@ pub trait Runtime {
         trials: usize,
         timeout: Option<std::time::Duration>,
     ) -> (Self::ProfileMetric, String);
+    /// Profile one candidate in the context of a specific dynamic-dimension
+    /// bucket. Runtimes with bucket-sensitive lowering can override this so
+    /// search ranks candidates under the same execution model used after
+    /// final bucket compilation.
+    fn profile_with_bucket_context(
+        &mut self,
+        llir_graph: &LLIRGraph,
+        dyn_map: &FxHashMap<char, usize>,
+        trials: usize,
+        timeout: Option<std::time::Duration>,
+        _bucket_context: ProfileBucketContext<'_>,
+    ) -> (Self::ProfileMetric, String) {
+        self.profile(llir_graph, dyn_map, trials, timeout)
+    }
     /// Aggregate multiple profile metrics into one comparable metric.
     /// Used for regionalized profiling where one candidate maps to multiple LLIR regions.
     fn aggregate_profile_metrics(metrics: &[Self::ProfileMetric]) -> Self::ProfileMetric {
@@ -58,33 +134,21 @@ pub trait Runtime {
     fn intermediate_buffer_bytes(&self) -> usize {
         0
     }
-    /// Total bytes in the active runtime memory plan, if the runtime has one.
-    fn planned_intermediate_buffer_bytes(&self) -> Option<usize> {
-        None
-    }
-    /// Total active intermediate allocation bytes, if the runtime can report it.
-    fn allocated_intermediate_buffer_bytes(&self) -> Option<usize> {
-        None
-    }
     /// Check if the most recent execution produced NaN in any output buffer.
     /// Used by the search to reject NaN-producing graph variants.
     fn has_nan_outputs(&self, _llir_graph: &LLIRGraph, _dyn_map: &FxHashMap<char, usize>) -> bool {
         false
     }
-    /// Estimate intermediate memory for a selected graph in the cleaned e-graph.
-    ///
-    /// This is intentionally optional because memory accounting is runtime
-    /// specific: backends decide which IR nodes allocate buffers and how dtype
-    /// storage is represented.
-    fn estimate_graph_memory<'a>(
-        _egraph: &'a SerializedEGraph,
-        _choices: &crate::egglog_utils::EGraphChoiceSet<'a>,
-        _dyn_map: &FxHashMap<char, usize>,
-    ) -> Option<usize>
-    where
-        Self: Sized,
-    {
-        None
+    /// Runtime-specific pre-profile candidate filter. Backends can reject an
+    /// extracted LLIR graph before profiling it, for example because it exceeds
+    /// a backend-specific resource budget. Core treats this as an opaque
+    /// accept/reject decision and optional display text.
+    fn filter_llir_candidate(
+        &mut self,
+        _llir_graph: &LLIRGraph,
+        _context: CandidateFilterContext<'_>,
+    ) -> CandidateFilterResult {
+        CandidateFilterResult::accept()
     }
     /// Load multiple compiled LLIR graphs, one per bucket combination.
     /// Each entry is (bucket_indices, representative_dyn_map, stitched_llir).

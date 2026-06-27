@@ -21,7 +21,6 @@ const REPO_ID: &str = "unsloth/Llama-3.2-1B-Instruct";
 const MAX_SEQ_LEN: usize = 2048;
 const GEN_TOKENS: usize = 96;
 const SEARCH_GRAPHS: usize = 100;
-const SEARCH_MEMORY_MIB: usize = 1536;
 const PROMPT: &str = "In one short paragraph, explain neural networks using the words layers, neurons, learning, and data.";
 
 const LAYERS: usize = 16;
@@ -458,7 +457,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     let search_s = 16.min(max_prefill).max(2);
     let search_c = 16.min(max_context).max(2);
     let build_options = CompileOptions::default()
-        .max_memory_mib(SEARCH_MEMORY_MIB)
         .dim_buckets(
             's',
             &[
@@ -503,7 +501,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     runtime.set_data(scatter_idx_t, (0..search_s as i32).collect::<Vec<_>>());
     runtime.set_data(gather_idx_t, (0..search_c as i32).collect::<Vec<_>>());
     runtime.set_data(attn_mask_t, vec![0.0f32; search_s * search_c]);
-    runtime = cx.search(runtime, CompileOptions::new(SEARCH_GRAPHS));
+    let search_options = CompileOptions::default()
+        .search_graph_limit(SEARCH_GRAPHS)
+        .candidate_timeout(Duration::from_secs(10));
+    runtime = cx.search(runtime, search_options);
     println!(
         "  Search/compile: {:.2} s",
         compile_start.elapsed().as_secs_f64()

@@ -462,8 +462,11 @@ pub(super) mod tests {
         let b = cx.tensor(b_shape.clone());
         let c = func(a, b).output();
 
-        cx.build_search_space::<NativeRuntime>(CompileOptions::default());
-        let mut rt = cx.search(NativeRuntime::default(), CompileOptions::new(1));
+        cx.build_search_space::<ReferenceRuntime>(CompileOptions::default());
+        let mut rt = cx.search(
+            ReferenceRuntime::default(),
+            CompileOptions::default().search_graph_limit(1),
+        );
 
         let lhs_values = lhs_transform(random_vec(a_shape.iter().copied().product()));
         let rhs_values = rhs_transform(random_vec(b_shape.iter().copied().product()));

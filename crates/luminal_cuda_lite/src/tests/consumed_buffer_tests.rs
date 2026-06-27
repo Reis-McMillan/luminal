@@ -307,7 +307,7 @@ fn test_scatter_kv_cache_roundtrip() {
     rt.set_data(src, vec![10.0f32]);
     rt.set_data(indexes, vec![0i32]);
 
-    rt = cx.search(rt, CompileOptions::new(5));
+    rt = cx.search(rt, CompileOptions::default().search_graph_limit(5));
 
     // Print and verify which scatter variant was selected
     let scatter_names: Vec<_> = rt
@@ -427,7 +427,11 @@ fn test_scatter_dual_cache() {
 
     // Use seeded search for deterministic variant selection.
     let mut rng = rand::rngs::SmallRng::seed_from_u64(0);
-    rt = cx.search_with_rng(rt, CompileOptions::new(5), &mut rng);
+    rt = cx.search_with_rng(
+        rt,
+        CompileOptions::default().search_graph_limit(5),
+        &mut rng,
+    );
 
     // Print and verify selected variants
     let scatter_names: Vec<_> = rt
@@ -507,6 +511,76 @@ fn test_scatter_dual_cache() {
     );
 }
 
+/// ScatterNoCopy should mutate the persistent cache inputs directly, so decode
+/// steps do not need remove/set/refresh feedback between executions.
+#[test]
+fn test_scatter_dual_cache_accumulates_without_roundtrip() {
+    let ctx = CudaContext::new(0).unwrap();
+    ctx.bind_to_thread().unwrap();
+    let stream = ctx.default_stream();
+
+    let mut cx = Graph::default();
+
+    let k_cache = cx.named_tensor("k_cache", 5).persist();
+    let v_cache = cx.named_tensor("v_cache", 5).persist();
+    let k_new = cx.tensor(1).persist();
+    let v_new = cx.tensor(1).persist();
+    let indexes = cx.tensor(1).as_dtype(DType::Int).persist();
+
+    let k_out = k_new.scatter(indexes, k_cache);
+    let v_out = v_new.scatter(indexes, v_cache);
+    let attn_out = ((k_out + 0.0) * (v_out + 0.0)).output();
+    let k_cache_out = k_out.output();
+    let v_cache_out = v_out.output();
+
+    cx.build_search_space::<CudaRuntime>(CompileOptions::default());
+
+    let mut rt = CudaRuntime::initialize(stream);
+    rt.set_data(k_cache, vec![0.0f32; 5]);
+    rt.set_data(v_cache, vec![0.0f32; 5]);
+    rt.set_data(k_new, vec![2.0f32]);
+    rt.set_data(v_new, vec![3.0f32]);
+    rt.set_data(indexes, vec![0i32]);
+
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(0);
+    rt = cx.search_with_rng(
+        rt,
+        CompileOptions::default().search_graph_limit(5),
+        &mut rng,
+    );
+
+    let scatter_names: Vec<_> = rt
+        .kernel_names()
+        .iter()
+        .copied()
+        .filter(|name| name.contains("catter"))
+        .collect();
+    assert!(
+        scatter_names.iter().all(|name| *name == "ScatterNoCopy"),
+        "Expected only ScatterNoCopy in dual-cache search result, got: {:?}",
+        scatter_names
+    );
+
+    rt.execute(&cx.dyn_map);
+    assert_eq!(rt.get_f32(attn_out), vec![6.0, 0.0, 0.0, 0.0, 0.0]);
+
+    rt.set_data(k_new, vec![4.0f32]);
+    rt.set_data(v_new, vec![5.0f32]);
+    rt.set_data(indexes, vec![1i32]);
+    rt.execute(&cx.dyn_map);
+    assert_eq!(rt.get_f32(attn_out), vec![6.0, 20.0, 0.0, 0.0, 0.0]);
+
+    rt.set_data(k_new, vec![6.0f32]);
+    rt.set_data(v_new, vec![7.0f32]);
+    rt.set_data(indexes, vec![2i32]);
+    rt.execute(&cx.dyn_map);
+    assert_eq!(rt.get_f32(attn_out), vec![6.0, 20.0, 42.0, 0.0, 0.0]);
+    assert_eq!(rt.get_f32(k_cache_out), vec![2.0, 4.0, 6.0, 0.0, 0.0]);
+    assert_eq!(rt.get_f32(v_cache_out), vec![3.0, 5.0, 7.0, 0.0, 0.0]);
+    assert_eq!(rt.get_f32(k_cache), vec![2.0, 4.0, 6.0, 0.0, 0.0]);
+    assert_eq!(rt.get_f32(v_cache), vec![3.0, 5.0, 7.0, 0.0, 0.0]);
+}
+
 /// Batched KV-cache updates scatter many rows at once during prefill. This is
 /// the path decode does not exercise when it scatters one token at a time.
 #[test]
@@ -554,7 +628,11 @@ fn test_scatter_rows_dynamic_prefill_roundtrip() {
     rt.set_data(gather_idx, scatter);
     rt.set_data(cache, (0..SLOTS * D).map(|i| i as f32).collect::<Vec<_>>());
     let mut rng = rand::rngs::SmallRng::seed_from_u64(0);
-    rt = cx.search_with_rng(rt, CompileOptions::new(10), &mut rng);
+    rt = cx.search_with_rng(
+        rt,
+        CompileOptions::default().search_graph_limit(10),
+        &mut rng,
+    );
     rt.execute(&cx.dyn_map);
 
     assert_eq!(rt.get_f32(gathered), expected_gather);
@@ -763,7 +841,11 @@ fn test_tiny_gqa_attention_batched_matches_sequential_prefill() {
     rt.set_data(k_cache, zero_k.clone());
     rt.set_data(v_cache, zero_v.clone());
     let mut rng = rand::rngs::SmallRng::seed_from_u64(0);
-    rt = cx.search_with_rng(rt, CompileOptions::new(10), &mut rng);
+    rt = cx.search_with_rng(
+        rt,
+        CompileOptions::default().search_graph_limit(10),
+        &mut rng,
+    );
     rt.execute(&cx.dyn_map);
     let batched_attn = rt.get_f32(attn_out);
     let batched_k = rt.get_f32(k_out);
@@ -865,7 +947,11 @@ fn test_original_gqa_attention_batched_matches_sequential_prefill() {
     rt.set_data(k_cache, zero_k.clone());
     rt.set_data(v_cache, zero_v.clone());
     let mut rng = rand::rngs::SmallRng::seed_from_u64(0);
-    rt = cx.search_with_rng(rt, CompileOptions::new(10), &mut rng);
+    rt = cx.search_with_rng(
+        rt,
+        CompileOptions::default().search_graph_limit(10),
+        &mut rng,
+    );
     rt.execute(&cx.dyn_map);
     let batched_attn = rt.get_f32(attn_out);
     let batched_k = rt.get_f32(k_out);
@@ -937,7 +1023,11 @@ fn test_dynamic_expanded_causal_mask_softmax() {
     let mut rt = CudaRuntime::initialize(stream);
     rt.set_data(mask, mask_data);
     let mut rng = rand::rngs::SmallRng::seed_from_u64(0);
-    rt = cx.search_with_rng(rt, CompileOptions::new(10), &mut rng);
+    rt = cx.search_with_rng(
+        rt,
+        CompileOptions::default().search_graph_limit(10),
+        &mut rng,
+    );
     rt.execute(&cx.dyn_map);
     let got = rt.get_f32(weights);
 
@@ -1007,7 +1097,11 @@ fn test_tiny_gqa_value_matmul_with_expanded_kv() {
     rt.set_data(v_full, v_data.clone());
     rt.set_data(mask, mask_data);
     let mut rng = rand::rngs::SmallRng::seed_from_u64(0);
-    rt = cx.search_with_rng(rt, CompileOptions::new(10), &mut rng);
+    rt = cx.search_with_rng(
+        rt,
+        CompileOptions::default().search_graph_limit(10),
+        &mut rng,
+    );
     rt.execute(&cx.dyn_map);
     let got = rt.get_f32(out);
 
@@ -1073,7 +1167,11 @@ fn test_broadcast_merge_gqa_value_matmul_matches_cpu() {
     rt.set_data(v_full, v_data.clone());
     rt.set_data(weights, weights_data);
     let mut rng = rand::rngs::SmallRng::seed_from_u64(0);
-    rt = cx.search_with_rng(rt, CompileOptions::new(10), &mut rng);
+    rt = cx.search_with_rng(
+        rt,
+        CompileOptions::default().search_graph_limit(10),
+        &mut rng,
+    );
     rt.execute(&cx.dyn_map);
     let got = rt.get_f32(out);
 
@@ -1124,7 +1222,11 @@ fn test_transpose_merge_split_roundtrip_matches_cpu() {
     let mut rt = CudaRuntime::initialize(stream);
     rt.set_data(x, x_data.clone());
     let mut rng = rand::rngs::SmallRng::seed_from_u64(0);
-    rt = cx.search_with_rng(rt, CompileOptions::new(10), &mut rng);
+    rt = cx.search_with_rng(
+        rt,
+        CompileOptions::default().search_graph_limit(10),
+        &mut rng,
+    );
     rt.execute(&cx.dyn_map);
     let got = rt.get_f32(roundtrip);
 
@@ -1171,7 +1273,11 @@ fn test_batched_moe_x_expand_matmul_matches_cpu() {
     rt.set_data(x, x_data.clone());
     rt.set_data(w, w_data.clone());
     let mut rng = rand::rngs::SmallRng::seed_from_u64(0);
-    rt = cx.search_with_rng(rt, CompileOptions::new(10), &mut rng);
+    rt = cx.search_with_rng(
+        rt,
+        CompileOptions::default().search_graph_limit(10),
+        &mut rng,
+    );
     rt.execute(&cx.dyn_map);
     let got = rt.get_f32(out);
 
@@ -1220,7 +1326,11 @@ fn test_batched_topk_axis1_matches_cpu() {
     let mut rt = CudaRuntime::initialize(stream);
     rt.set_data(routing, routing_data.clone());
     let mut rng = rand::rngs::SmallRng::seed_from_u64(0);
-    rt = cx.search_with_rng(rt, CompileOptions::new(10), &mut rng);
+    rt = cx.search_with_rng(
+        rt,
+        CompileOptions::default().search_graph_limit(10),
+        &mut rng,
+    );
     rt.execute(&cx.dyn_map);
     let got = rt.get_i32(topk);
 
@@ -1259,7 +1369,11 @@ fn test_batched_argsort_axis1_matches_cpu() {
     let mut rt = CudaRuntime::initialize(stream);
     rt.set_data(routing, routing_data.clone());
     let mut rng = rand::rngs::SmallRng::seed_from_u64(0);
-    rt = cx.search_with_rng(rt, CompileOptions::new(10), &mut rng);
+    rt = cx.search_with_rng(
+        rt,
+        CompileOptions::default().search_graph_limit(10),
+        &mut rng,
+    );
     rt.execute(&cx.dyn_map);
     let got = rt.get_i32(argsort);
 
@@ -1299,7 +1413,11 @@ fn test_dynamic_3d_sum_axis1_matches_cpu() {
     let mut rt = CudaRuntime::initialize(stream);
     rt.set_data(input, data.clone());
     let mut rng = rand::rngs::SmallRng::seed_from_u64(0);
-    rt = cx.search_with_rng(rt, CompileOptions::new(10), &mut rng);
+    rt = cx.search_with_rng(
+        rt,
+        CompileOptions::default().search_graph_limit(10),
+        &mut rng,
+    );
     rt.execute(&cx.dyn_map);
     let got = rt.get_f32(out);
 
@@ -1356,7 +1474,11 @@ fn test_batched_argsort_ranks_axis1_matches_cpu() {
     let mut rt = CudaRuntime::initialize(stream);
     rt.set_data(routing, routing_data.clone());
     let mut rng = rand::rngs::SmallRng::seed_from_u64(0);
-    rt = cx.search_with_rng(rt, CompileOptions::new(10), &mut rng);
+    rt = cx.search_with_rng(
+        rt,
+        CompileOptions::default().search_graph_limit(10),
+        &mut rng,
+    );
     rt.execute(&cx.dyn_map);
     let got = rt.get_i32(ranks);
 
@@ -1395,7 +1517,11 @@ fn test_dynamic_3d_flat_index_iota_rows() {
 
     let mut rt = CudaRuntime::initialize(stream);
     let mut rng = rand::rngs::SmallRng::seed_from_u64(0);
-    rt = cx.search_with_rng(rt, CompileOptions::new(10), &mut rng);
+    rt = cx.search_with_rng(
+        rt,
+        CompileOptions::default().search_graph_limit(10),
+        &mut rng,
+    );
     rt.execute(&cx.dyn_map);
     let got = rt.get_i32(idx);
 
@@ -1438,7 +1564,11 @@ fn test_dynamic_2d_to_3d_gather_rows() {
     let mut rt = CudaRuntime::initialize(stream);
     rt.set_data(data, data_values.clone());
     let mut rng = rand::rngs::SmallRng::seed_from_u64(0);
-    rt = cx.search_with_rng(rt, CompileOptions::new(10), &mut rng);
+    rt = cx.search_with_rng(
+        rt,
+        CompileOptions::default().search_graph_limit(10),
+        &mut rng,
+    );
     rt.execute(&cx.dyn_map);
     let got = rt.get_i32(out);
 
@@ -1490,7 +1620,11 @@ fn test_batched_gather_experts_matches_cpu() {
     rt.set_data(topk, topk_data.clone());
     rt.set_data(weights, weights_data.clone());
     let mut rng = rand::rngs::SmallRng::seed_from_u64(0);
-    rt = cx.search_with_rng(rt, CompileOptions::new(10), &mut rng);
+    rt = cx.search_with_rng(
+        rt,
+        CompileOptions::default().search_graph_limit(10),
+        &mut rng,
+    );
     rt.execute(&cx.dyn_map);
     let got = rt.get_f32(out);
 

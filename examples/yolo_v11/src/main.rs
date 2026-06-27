@@ -1,3 +1,11 @@
+// glibc malloc degrades into an allocating livelock inside
+// nvrtcCompileProgram after heavy search heap churn (hundreds of
+// thousands of compiles). jemalloc built with unprefixed symbols
+// interposes malloc for the whole process, including dlopened CUDA
+// libraries like libnvrtc — a Rust-only global allocator would not.
+#[global_allocator]
+static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 mod model;
 
 use std::{
@@ -335,7 +343,8 @@ fn main() {
 
     println!("Compiling (search_graphs={search_graphs})...");
     let t0 = Instant::now();
-    runtime = cx.search(runtime, CompileOptions::new(search_graphs));
+    let search_options = CompileOptions::default().search_graph_limit(search_graphs);
+    runtime = cx.search(runtime, search_options);
     println!("  search took {:?}", t0.elapsed());
 
     // Re-set anchors/strides/dfl/img after search (search may consume the inputs)

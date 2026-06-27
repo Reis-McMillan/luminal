@@ -4,7 +4,7 @@ use luminal::{
     prelude::{F32Pow, GraphTensor},
     shape::Expression,
 };
-use luminal_nn::LayerNorm;
+use luminal_nn::{LayerNorm, gather_rows, scatter_rows};
 
 pub const LAYERS: usize = 30;
 pub const HIDDEN: usize = 2816;
@@ -68,13 +68,13 @@ fn layer_spec(layer: usize) -> LayerSpec {
 
 pub fn cache_bytes_for_layer(layer: usize, max_seq: usize) -> usize {
     let spec = layer_spec(layer);
-    spec.num_kv_heads * max_seq * spec.head_dim * std::mem::size_of::<f32>()
+    // Row-paged (max_seq, kv_dim) bf16 pools.
+    max_seq * spec.kv_dim * 2
 }
 
 pub struct KVCache {
     pub k_caches: Vec<GraphTensor>,
     pub v_caches: Vec<GraphTensor>,
-    pub max_seq: usize,
 }
 
 impl KVCache {
@@ -83,26 +83,18 @@ impl KVCache {
         let mut v_caches = Vec::with_capacity(LAYERS);
         for layer in 0..LAYERS {
             let spec = layer_spec(layer);
-            let k = cx
-                .named_tensor(
-                    format!("kv_cache.{layer}.k"),
-                    (spec.num_kv_heads, max_seq, spec.head_dim),
-                )
-                .persist();
-            let v = cx
-                .named_tensor(
-                    format!("kv_cache.{layer}.v"),
-                    (spec.num_kv_heads, max_seq, spec.head_dim),
-                )
-                .persist();
-            k_caches.push(k);
-            v_caches.push(v);
+            // Row-paged layout (num_slots, kv_dim) in bf16 — the spelling the
+            // FlashInfer attention rewrites match.
+            k_caches.push(
+                persist(cx, format!("kv_cache.{layer}.k"), (max_seq, spec.kv_dim))
+                    .as_dtype(DType::Bf16),
+            );
+            v_caches.push(
+                persist(cx, format!("kv_cache.{layer}.v"), (max_seq, spec.kv_dim))
+                    .as_dtype(DType::Bf16),
+            );
         }
-        Self {
-            k_caches,
-            v_caches,
-            max_seq,
-        }
+        Self { k_caches, v_caches }
     }
 }
 
@@ -115,169 +107,14 @@ pub struct Gemma4MoE {
 
 impl Gemma4MoE {
     pub fn init(cx: &mut Graph) -> Self {
-        let mut layers = Vec::with_capacity(LAYERS);
-        for layer in 0..LAYERS {
-            let spec = layer_spec(layer);
-            let gate = cx
-                .named_tensor(
-                    format!("model.layers.{layer}.mlp.gate_proj.weight"),
-                    (INTERMEDIATE, HIDDEN),
-                )
-                .persist();
-            let up = cx
-                .named_tensor(
-                    format!("model.layers.{layer}.mlp.up_proj.weight"),
-                    (INTERMEDIATE, HIDDEN),
-                )
-                .persist();
-            let down = cx
-                .named_tensor(
-                    format!("model.layers.{layer}.mlp.down_proj.weight"),
-                    (HIDDEN, INTERMEDIATE),
-                )
-                .persist();
-
-            let q_proj = cx
-                .named_tensor(
-                    format!("model.layers.{layer}.self_attn.q_proj.weight"),
-                    (spec.q_dim, HIDDEN),
-                )
-                .persist();
-            let k_proj = cx
-                .named_tensor(
-                    format!("model.layers.{layer}.self_attn.k_proj.weight"),
-                    (spec.kv_dim, HIDDEN),
-                )
-                .persist();
-            let v_proj = spec.has_v_proj.then(|| {
-                cx.named_tensor(
-                    format!("model.layers.{layer}.self_attn.v_proj.weight"),
-                    (spec.kv_dim, HIDDEN),
-                )
-                .persist()
-            });
-            let o_proj = cx
-                .named_tensor(
-                    format!("model.layers.{layer}.self_attn.o_proj.weight"),
-                    (HIDDEN, spec.q_dim),
-                )
-                .persist();
-            let q_norm = cx
-                .named_tensor(
-                    format!("model.layers.{layer}.self_attn.q_norm.weight"),
-                    spec.head_dim,
-                )
-                .persist();
-            let k_norm = cx
-                .named_tensor(
-                    format!("model.layers.{layer}.self_attn.k_norm.weight"),
-                    spec.head_dim,
-                )
-                .persist();
-            let layer_scalar = cx
-                .named_tensor(format!("model.layers.{layer}.layer_scalar"), HIDDEN)
-                .persist();
-
-            let router_scale = cx
-                .named_tensor(format!("model.layers.{layer}.router.scale"), HIDDEN)
-                .persist();
-            let router_proj = cx
-                .named_tensor(
-                    format!("model.layers.{layer}.router.proj.weight"),
-                    (NUM_EXPERTS, HIDDEN),
-                )
-                .persist();
-            let per_expert_scale = cx
-                .named_tensor(
-                    format!("model.layers.{layer}.router.per_expert_scale"),
-                    NUM_EXPERTS,
-                )
-                .persist();
-            let gate_up_weights = cx
-                .named_tensor(
-                    format!("model.layers.{layer}.experts.gate_up_proj"),
-                    (NUM_EXPERTS, MOE_INTERMEDIATE * 2, HIDDEN),
-                )
-                .persist()
-                .as_dtype(DType::Bf16);
-            let down_weights = cx
-                .named_tensor(
-                    format!("model.layers.{layer}.experts.down_proj"),
-                    (NUM_EXPERTS, HIDDEN, MOE_INTERMEDIATE),
-                )
-                .persist()
-                .as_dtype(DType::Bf16);
-
-            layers.push(Gemma4Layer {
-                spec,
-                gate,
-                up,
-                down,
-                q_proj,
-                k_proj,
-                v_proj,
-                o_proj,
-                q_norm,
-                k_norm,
-                layer_scalar,
-                input_layernorm: gemma4_norm(
-                    HIDDEN,
-                    &format!("model.layers.{layer}.input_layernorm.weight"),
-                    cx,
-                ),
-                post_attention_layernorm: gemma4_norm(
-                    HIDDEN,
-                    &format!("model.layers.{layer}.post_attention_layernorm.weight"),
-                    cx,
-                ),
-                pre_feedforward_layernorm: gemma4_norm(
-                    HIDDEN,
-                    &format!("model.layers.{layer}.pre_feedforward_layernorm.weight"),
-                    cx,
-                ),
-                post_feedforward_layernorm: gemma4_norm(
-                    HIDDEN,
-                    &format!("model.layers.{layer}.post_feedforward_layernorm.weight"),
-                    cx,
-                ),
-                post_feedforward_layernorm_1: gemma4_norm(
-                    HIDDEN,
-                    &format!("model.layers.{layer}.post_feedforward_layernorm_1.weight"),
-                    cx,
-                ),
-                post_feedforward_layernorm_2: gemma4_norm(
-                    HIDDEN,
-                    &format!("model.layers.{layer}.post_feedforward_layernorm_2.weight"),
-                    cx,
-                ),
-                pre_feedforward_layernorm_2: gemma4_norm(
-                    HIDDEN,
-                    &format!("model.layers.{layer}.pre_feedforward_layernorm_2.weight"),
-                    cx,
-                ),
-                moe: Gemma4SparseMoE {
-                    router_scale,
-                    router_proj,
-                    per_expert_scale,
-                    gate_up_weights,
-                    down_weights,
-                },
-            });
-        }
-
-        let embedding = cx
-            .named_tensor("model.embed_tokens.weight", (VOCAB_SIZE, HIDDEN))
-            .persist();
-        let lm_head = cx
-            .named_tensor("lm_head.weight", (VOCAB_SIZE, HIDDEN))
-            .persist();
-        let lm_norm = gemma4_norm(HIDDEN, "model.norm.weight", cx);
-
         Self {
-            embedding,
-            lm_head,
-            layers,
-            lm_norm,
+            embedding: persist(cx, "model.embed_tokens.weight", (VOCAB_SIZE, HIDDEN))
+                .as_dtype(DType::Bf16),
+            lm_head: persist(cx, "lm_head.weight", (VOCAB_SIZE, HIDDEN)).as_dtype(DType::Bf16),
+            layers: (0..LAYERS)
+                .map(|layer| Gemma4Layer::init(cx, layer))
+                .collect(),
+            lm_norm: gemma4_norm(HIDDEN, "model.norm.weight", cx),
         }
     }
 
@@ -285,30 +122,66 @@ impl Gemma4MoE {
         &self,
         token_ids: GraphTensor,
         pos_ids: GraphTensor,
+        scatter_idx: GraphTensor,
+        gather_idx: GraphTensor,
         kv_cache: &KVCache,
     ) -> (GraphTensor, Vec<(GraphTensor, GraphTensor)>) {
-        let seq = token_ids.dims1();
-        let mut x = self.embedding.gather(
-            (token_ids * HIDDEN).expand_dim(1, HIDDEN)
-                + token_ids.graph().arange(HIDDEN).expand_dim(0, seq),
-        );
+        let mut x = token_embedding(self.embedding, token_ids);
 
         let mut cache_outputs = Vec::with_capacity(LAYERS);
         for (layer_idx, layer) in self.layers.iter().enumerate() {
             let (x_new, k_out, v_out) = layer.forward(
                 x,
                 pos_ids,
+                scatter_idx,
+                gather_idx,
                 kv_cache.k_caches[layer_idx],
                 kv_cache.v_caches[layer_idx],
-                kv_cache.max_seq,
             );
             x = x_new;
             cache_outputs.push((k_out, v_out));
         }
 
-        let logits = self.lm_norm.forward(x).matmul(self.lm_head.t());
+        let logits = norm_in_f32(&self.lm_norm, x)
+            .matmul(self.lm_head.t())
+            .cast(DType::F32);
         let logits = (logits / FINAL_LOGIT_SOFTCAP).tanh() * FINAL_LOGIT_SOFTCAP;
         (logits, cache_outputs)
+    }
+
+    /// Forward + on-device sampling: repetition penalty against a persistent
+    /// seen-token mask, then argmax. Per-step host I/O is one token id each
+    /// way. `new_token` (the previously sampled id, -1 for none) is inserted
+    /// into the mask BEFORE the penalty read.
+    #[allow(clippy::too_many_arguments)]
+    pub fn forward_with_sampling(
+        &self,
+        token_ids: GraphTensor,
+        pos_ids: GraphTensor,
+        scatter_idx: GraphTensor,
+        gather_idx: GraphTensor,
+        kv_cache: &KVCache,
+        seen_mask: GraphTensor,
+        new_token: GraphTensor,
+        repetition_penalty: f32,
+    ) -> (GraphTensor, GraphTensor, Vec<(GraphTensor, GraphTensor)>) {
+        let (logits, cache_outputs) =
+            self.forward(token_ids, pos_ids, scatter_idx, gather_idx, kv_cache);
+        let cx = unsafe { &mut *logits.graph_ref };
+        let s = logits.dims()[0];
+
+        let one = cx.constant_float(1.0).expand_dim(0, 1);
+        let seen_out = one.scatter(new_token, seen_mask);
+
+        let p = repetition_penalty;
+        let seen_b = seen_out.expand_dim(0, s);
+        let zero = cx.constant_float(0.0).expand_rhs(logits.dims());
+        let pos = zero.lt(logits).cast(DType::F32);
+        let factor = seen_b * (pos * (1.0 / p - 1.0) + (-pos + 1.0) * (p - 1.0)) + 1.0;
+        let penalized = logits * factor;
+
+        let sampled = penalized.argmax(1);
+        (sampled, seen_out, cache_outputs)
     }
 }
 
@@ -342,8 +215,200 @@ struct Gemma4SparseMoE {
     down_weights: GraphTensor,
 }
 
+impl Gemma4Layer {
+    fn init(cx: &mut Graph, layer: usize) -> Self {
+        let spec = layer_spec(layer);
+        Self {
+            spec,
+            gate: layer_weight(cx, layer, "mlp.gate_proj", (INTERMEDIATE, HIDDEN))
+                .as_dtype(DType::Bf16),
+            up: layer_weight(cx, layer, "mlp.up_proj", (INTERMEDIATE, HIDDEN))
+                .as_dtype(DType::Bf16),
+            down: layer_weight(cx, layer, "mlp.down_proj", (HIDDEN, INTERMEDIATE))
+                .as_dtype(DType::Bf16),
+            q_proj: layer_weight(cx, layer, "self_attn.q_proj", (spec.q_dim, HIDDEN))
+                .as_dtype(DType::Bf16),
+            k_proj: layer_weight(cx, layer, "self_attn.k_proj", (spec.kv_dim, HIDDEN))
+                .as_dtype(DType::Bf16),
+            v_proj: spec.has_v_proj.then(|| {
+                layer_weight(cx, layer, "self_attn.v_proj", (spec.kv_dim, HIDDEN))
+                    .as_dtype(DType::Bf16)
+            }),
+            o_proj: layer_weight(cx, layer, "self_attn.o_proj", (HIDDEN, spec.q_dim))
+                .as_dtype(DType::Bf16),
+            q_norm: layer_weight(cx, layer, "self_attn.q_norm", spec.head_dim),
+            k_norm: layer_weight(cx, layer, "self_attn.k_norm", spec.head_dim),
+            layer_scalar: layer_tensor(cx, layer, "layer_scalar", HIDDEN),
+            input_layernorm: layer_norm(cx, layer, "input_layernorm"),
+            post_attention_layernorm: layer_norm(cx, layer, "post_attention_layernorm"),
+            pre_feedforward_layernorm: layer_norm(cx, layer, "pre_feedforward_layernorm"),
+            post_feedforward_layernorm: layer_norm(cx, layer, "post_feedforward_layernorm"),
+            post_feedforward_layernorm_1: layer_norm(cx, layer, "post_feedforward_layernorm_1"),
+            post_feedforward_layernorm_2: layer_norm(cx, layer, "post_feedforward_layernorm_2"),
+            pre_feedforward_layernorm_2: layer_norm(cx, layer, "pre_feedforward_layernorm_2"),
+            moe: Gemma4SparseMoE {
+                router_scale: layer_tensor(cx, layer, "router.scale", HIDDEN),
+                router_proj: layer_weight(cx, layer, "router.proj", (NUM_EXPERTS, HIDDEN)),
+                per_expert_scale: layer_tensor(cx, layer, "router.per_expert_scale", NUM_EXPERTS),
+                gate_up_weights: layer_tensor(
+                    cx,
+                    layer,
+                    "experts.gate_up_proj",
+                    (NUM_EXPERTS, MOE_INTERMEDIATE * 2, HIDDEN),
+                )
+                .as_dtype(DType::Bf16),
+                down_weights: layer_tensor(
+                    cx,
+                    layer,
+                    "experts.down_proj",
+                    (NUM_EXPERTS, HIDDEN, MOE_INTERMEDIATE),
+                )
+                .as_dtype(DType::Bf16),
+            },
+        }
+    }
+
+    pub fn forward(
+        &self,
+        x: GraphTensor,
+        pos_ids: GraphTensor,
+        scatter_idx: GraphTensor,
+        gather_idx: GraphTensor,
+        k_cache_in: GraphTensor,
+        v_cache_in: GraphTensor,
+    ) -> (GraphTensor, GraphTensor, GraphTensor) {
+        let residual = x;
+        let x_attn = norm_in_f32(&self.input_layernorm, x);
+        let q = x_attn.matmul(self.q_proj.t());
+        let k_base = x_attn.matmul(self.k_proj.t());
+        let v_base = if let Some(v_proj) = self.v_proj {
+            x_attn.matmul(v_proj.t())
+        } else {
+            k_base
+        };
+
+        let q_normed = qk_norm(q, self.q_norm, N_HEADS, self.spec.head_dim);
+        let k_normed = qk_norm(
+            k_base,
+            self.k_norm,
+            self.spec.num_kv_heads,
+            self.spec.head_dim,
+        );
+        let v_normed = value_norm(v_base, self.spec.head_dim);
+
+        let q_rope = gemma4_rotary_embeddings(
+            q_normed,
+            pos_ids,
+            N_HEADS,
+            self.spec.head_dim,
+            self.spec.rope_theta,
+            self.spec.partial_rotary_factor,
+        );
+        let k_rope = gemma4_rotary_embeddings(
+            k_normed,
+            pos_ids,
+            self.spec.num_kv_heads,
+            self.spec.head_dim,
+            self.spec.rope_theta,
+            self.spec.partial_rotary_factor,
+        );
+
+        // bf16 paged attention: scores/softmax compute in the attention
+        // island (FlashInfer when matched), KV cache is bf16.
+        let (attn_out, k_cache_out, v_cache_out) = paged_attention(
+            q_rope,
+            k_rope,
+            v_normed,
+            k_cache_in,
+            v_cache_in,
+            scatter_idx,
+            gather_idx,
+            pos_ids,
+            self.spec,
+        );
+
+        let attn_proj = attn_out.matmul(self.o_proj.t());
+        let x = residual + norm_in_f32(&self.post_attention_layernorm, attn_proj);
+
+        let dense_ff = dense_ffn(
+            norm_in_f32(&self.pre_feedforward_layernorm, x),
+            self.gate,
+            self.up,
+            self.down,
+        );
+        let dense_ff = norm_in_f32(&self.post_feedforward_layernorm_1, dense_ff);
+
+        // Router and expert math in F32 (cast at the block edge), back to
+        // bf16 for the residual stream.
+        let moe_out = self.moe.forward(
+            x.cast(DType::F32),
+            norm_in_f32(&self.pre_feedforward_layernorm_2, x).cast(DType::F32),
+        );
+        let moe_out = norm_in_f32(
+            &self.post_feedforward_layernorm_2,
+            moe_out.cast(DType::Bf16),
+        );
+
+        let ff_out = norm_in_f32(&self.post_feedforward_layernorm, dense_ff + moe_out);
+        let x = x + ff_out;
+        let x = x * self
+            .layer_scalar
+            .cast(DType::Bf16)
+            .expand_lhs(&x.dims()[..x.dims().len() - 1]);
+
+        (x, k_cache_out, v_cache_out)
+    }
+}
+
+fn persist(
+    cx: &mut Graph,
+    name: impl ToString,
+    shape: impl luminal::prelude::ToShape,
+) -> GraphTensor {
+    cx.named_tensor(name, shape).persist()
+}
+
+fn layer_tensor(
+    cx: &mut Graph,
+    layer: usize,
+    suffix: &str,
+    shape: impl luminal::prelude::ToShape,
+) -> GraphTensor {
+    persist(cx, format!("model.layers.{layer}.{suffix}"), shape)
+}
+
+fn layer_weight(
+    cx: &mut Graph,
+    layer: usize,
+    suffix: &str,
+    shape: impl luminal::prelude::ToShape,
+) -> GraphTensor {
+    layer_tensor(cx, layer, &format!("{suffix}.weight"), shape)
+}
+
+fn layer_norm(cx: &mut Graph, layer: usize, name: &str) -> LayerNorm {
+    gemma4_norm(HIDDEN, &format!("model.layers.{layer}.{name}.weight"), cx)
+}
+
+fn token_embedding(embedding: GraphTensor, token_ids: GraphTensor) -> GraphTensor {
+    let seq = token_ids.dims1();
+    embedding.gather(
+        (token_ids * HIDDEN).expand_dim(1, HIDDEN)
+            + token_ids.graph().arange(HIDDEN).expand_dim(0, seq),
+    )
+}
+
 fn gemma4_norm(dim: usize, weight_name: &str, cx: &mut Graph) -> LayerNorm {
     LayerNorm::new(dim, Some(weight_name), None, false, RMS_NORM_EPS, cx)
+}
+
+/// RMS norm computed in F32 with explicit casts when the input is 16-bit.
+fn norm_in_f32(norm: &LayerNorm, x: GraphTensor) -> GraphTensor {
+    if x.dtype == DType::F32 {
+        norm.forward(x)
+    } else {
+        norm.forward(x.cast(DType::F32)).cast(x.dtype)
+    }
 }
 
 #[allow(clippy::excessive_precision)]
@@ -353,17 +418,40 @@ fn gemma_gelu(x: GraphTensor) -> GraphTensor {
 }
 
 fn qk_norm(x: GraphTensor, weight: GraphTensor, n_heads: usize, head_dim: usize) -> GraphTensor {
+    let dtype = x.dtype;
     let seq = x.dims()[0];
+    let x = if dtype == DType::F32 {
+        x
+    } else {
+        x.cast(DType::F32)
+    };
     let reshaped = x.split_dims(1, head_dim);
     let normed = reshaped.std_norm(2, RMS_NORM_EPS);
     let w = weight.expand_dim(0, n_heads).expand_dim(0, seq);
-    (normed * w).merge_dims(1, 2)
+    let result = (normed * w).merge_dims(1, 2);
+    if dtype == DType::F32 {
+        result
+    } else {
+        result.cast(dtype)
+    }
 }
 
 fn value_norm(x: GraphTensor, head_dim: usize) -> GraphTensor {
-    x.split_dims(1, head_dim)
+    let dtype = x.dtype;
+    let x = if dtype == DType::F32 {
+        x
+    } else {
+        x.cast(DType::F32)
+    };
+    let result = x
+        .split_dims(1, head_dim)
         .std_norm(2, RMS_NORM_EPS)
-        .merge_dims(1, 2)
+        .merge_dims(1, 2);
+    if dtype == DType::F32 {
+        result
+    } else {
+        result.cast(dtype)
+    }
 }
 
 fn gemma4_rotary_embeddings(
@@ -403,8 +491,15 @@ fn gemma4_rotary_embeddings(
     let x0 = input.slice((.., .., ..half_dim));
     let x1 = input.slice((.., .., half_dim..));
 
-    let cos = emb.cos().expand_dim(0, n_heads);
-    let sin = emb.sin().expand_dim(0, n_heads);
+    // Angles in F32; rotation in the activation dtype.
+    let mut cos = emb.cos();
+    let mut sin = emb.sin();
+    if x0.dtype != DType::F32 {
+        cos = cos.cast(x0.dtype);
+        sin = sin.cast(x0.dtype);
+    }
+    let cos = cos.expand_dim(0, n_heads);
+    let sin = sin.expand_dim(0, n_heads);
     let x0_out = x0 * cos - x1 * sin;
     let x1_out = x1 * cos + x0 * sin;
 
@@ -433,151 +528,69 @@ fn gather_experts(
     weights.gather(expert_flat_idx)
 }
 
-fn hlir_attention(
+/// Paged attention in the llama/qwen HLIR spelling (scatter_rows into 2D
+/// bf16 caches, gather via a flat row index, GQA broadcast, triu causal
+/// mask) — the FlashInfer rewrites match this pattern; the HLIR chain
+/// remains the fallback candidate. Gemma deltas vs qwen: scores are
+/// SCALE-FREE (attention scaling 1.0), and sliding layers add a window
+/// term to the mask: positions older than `q_pos - (W-1)` are blocked.
+#[allow(clippy::too_many_arguments)]
+fn paged_attention(
     q_rope: GraphTensor,
     k_rope: GraphTensor,
     v: GraphTensor,
-    k_cache_in: GraphTensor,
-    v_cache_in: GraphTensor,
-    max_seq: usize,
+    k_cache: GraphTensor,
+    v_cache: GraphTensor,
+    scatter_idx: GraphTensor,
+    gather_idx: GraphTensor,
+    q_pos: GraphTensor,
     spec: LayerSpec,
 ) -> (GraphTensor, GraphTensor, GraphTensor) {
     let cx = q_rope.graph();
+    let head_dim = spec.head_dim;
+    let kv_dim = spec.kv_dim;
+    let kv_groups = spec.kv_groups;
+
+    let k_cache_out = scatter_rows(k_rope, scatter_idx, k_cache, kv_dim);
+    let v_cache_out = scatter_rows(v, scatter_idx, v_cache, kv_dim);
+
+    let k = gather_rows(k_cache_out, gather_idx, kv_dim);
+    let v_ctx = gather_rows(v_cache_out, gather_idx, kv_dim);
+
+    let q = (q_rope * 1.0).split_dims(1, head_dim).transpose(0, 1);
+    let k = k.split_dims(1, head_dim).permute((1, 2, 0));
+    let v_ctx = v_ctx.split_dims(1, head_dim).transpose(0, 1);
+
+    let k = k.expand_dim(1, kv_groups).merge_dims(0, 1) * 1.0;
+    let v_ctx = v_ctx.expand_dim(1, kv_groups).merge_dims(0, 1) * 1.0;
+
+    // Gemma 4's text attention leaves the attention scaling at 1.0 — no
+    // 1/sqrt(head_dim) scale on the scores.
+    let scores = q.matmul(k);
+    let ctx = Expression::from('c');
     let seq = q_rope.dims()[0];
-    let prev = Expression::from('p');
-    let total_seq = prev + seq;
+    let causal_square = scores.graph().triu(ctx, 1).cast(scores.dtype) * -1e10;
+    let row_offsets = (q_pos * ctx).expand_dim(1, ctx);
+    let col_offsets = scores.graph().arange(ctx).expand_dim(0, seq);
+    let attn_mask = causal_square.gather(row_offsets + col_offsets);
 
-    let k_new = k_rope.split_dims(1, spec.head_dim).transpose(0, 1);
-    let v_new = v.split_dims(1, spec.head_dim).transpose(0, 1);
-
-    let h_offset = cx.arange(spec.num_kv_heads) * (max_seq * spec.head_dim);
-    let p_offset = (cx.arange(seq) + prev) * spec.head_dim;
-    let d_offset = cx.arange(spec.head_dim);
-    let scatter_idx = h_offset.expand_dim(1, seq).expand_dim(2, spec.head_dim)
-        + p_offset
-            .expand_dim(0, spec.num_kv_heads)
-            .expand_dim(2, spec.head_dim)
-        + d_offset.expand_dim(0, spec.num_kv_heads).expand_dim(1, seq);
-
-    let k_cache_out = k_new.scatter(scatter_idx, k_cache_in);
-    let v_cache_out = v_new.scatter(scatter_idx, v_cache_in);
-
-    let mut k_full = k_cache_out.slice((.., ..total_seq, ..));
-    let mut v_full = v_cache_out.slice((.., ..total_seq, ..));
-    // LUM-545: model invariant `prev + seq <= max_seq`, but the frontend
-    // cannot yet propagate expression-bound assertions, so `slice` reports
-    // `min(max_seq, p+s)`. Normalize the visible cache axis to `total_seq`.
-    k_full.shape.dims[1] = total_seq;
-    v_full.shape.dims[1] = total_seq;
-
-    let k_3d = k_full.expand_dim(1, spec.kv_groups).merge_dims(0, 1);
-    let v_3d = v_full.expand_dim(1, spec.kv_groups).merge_dims(0, 1);
-    let q = q_rope.split_dims(1, spec.head_dim).transpose(0, 1);
-
-    // Gemma 4's text attention uses Q/K normalization and then leaves the
-    // attention scaling at 1.0 in the reference implementation.
-    let scores = q.matmul(k_3d.transpose(1, 2));
-
-    let q_abs = cx.arange(seq).cast(DType::F32) + prev;
-    let k_pos = cx.arange(total_seq).cast(DType::F32);
-    let future_mask = k_pos
-        .expand_dim(0, seq)
-        .gt(q_abs.expand_dim(1, total_seq))
-        .cast(DType::F32);
-
-    let mask_2d = if spec.is_sliding {
-        let window_start = q_abs - (SLIDING_WINDOW_SIZE - 1) as f32;
-        let past_mask = window_start
-            .expand_dim(1, total_seq)
-            .gt(k_pos.expand_dim(0, seq))
-            .cast(DType::F32);
-        future_mask + past_mask
+    let attn_mask = if spec.is_sliding {
+        // Window: block kv positions older than q_pos - (W-1).
+        let q_f = q_pos.cast(DType::F32);
+        let win_lo = q_f - (SLIDING_WINDOW_SIZE - 1) as f32;
+        let col_f = cx.arange(ctx).cast(DType::F32);
+        let too_old = col_f.expand_dim(0, seq).lt(win_lo.expand_dim(1, ctx));
+        attn_mask + too_old.cast(scores.dtype) * -1e10
     } else {
-        future_mask
+        attn_mask
     };
-    let mask_3d = mask_2d.expand_dim(0, N_HEADS);
-    let masked_scores = scores + mask_3d * (-1e10f32);
 
-    let attn_weights = masked_scores.softmax(2);
-    let attn_out = attn_weights.matmul(v_3d);
-    let out = attn_out.transpose(0, 1).merge_dims(1, 2);
+    let masked_scores = scores + attn_mask.expand_dim(0, N_HEADS);
+    let weights = masked_scores.softmax(2);
+    let out = weights.matmul(v_ctx);
+    let attn_out = out.transpose(0, 1).merge_dims(1, 2);
 
-    (out, k_cache_out, v_cache_out)
-}
-
-impl Gemma4Layer {
-    pub fn forward(
-        &self,
-        x: GraphTensor,
-        pos_ids: GraphTensor,
-        k_cache_in: GraphTensor,
-        v_cache_in: GraphTensor,
-        max_seq: usize,
-    ) -> (GraphTensor, GraphTensor, GraphTensor) {
-        let residual = x;
-        let x_attn = self.input_layernorm.forward(x);
-        let q = x_attn.matmul(self.q_proj.t());
-        let k_base = x_attn.matmul(self.k_proj.t());
-        let v_base = if let Some(v_proj) = self.v_proj {
-            x_attn.matmul(v_proj.t())
-        } else {
-            k_base
-        };
-
-        let q_normed = qk_norm(q, self.q_norm, N_HEADS, self.spec.head_dim);
-        let k_normed = qk_norm(
-            k_base,
-            self.k_norm,
-            self.spec.num_kv_heads,
-            self.spec.head_dim,
-        );
-        let v_normed = value_norm(v_base, self.spec.head_dim);
-
-        let q_rope = gemma4_rotary_embeddings(
-            q_normed,
-            pos_ids,
-            N_HEADS,
-            self.spec.head_dim,
-            self.spec.rope_theta,
-            self.spec.partial_rotary_factor,
-        );
-        let k_rope = gemma4_rotary_embeddings(
-            k_normed,
-            pos_ids,
-            self.spec.num_kv_heads,
-            self.spec.head_dim,
-            self.spec.rope_theta,
-            self.spec.partial_rotary_factor,
-        );
-
-        let (attn_out, k_cache_out, v_cache_out) = hlir_attention(
-            q_rope, k_rope, v_normed, k_cache_in, v_cache_in, max_seq, self.spec,
-        );
-
-        let attn_proj = attn_out.matmul(self.o_proj.t());
-        let x = residual + self.post_attention_layernorm.forward(attn_proj);
-
-        let dense_ff = dense_ffn(
-            self.pre_feedforward_layernorm.forward(x),
-            self.gate,
-            self.up,
-            self.down,
-        );
-        let dense_ff = self.post_feedforward_layernorm_1.forward(dense_ff);
-
-        let moe_out = self
-            .moe
-            .forward(x, self.pre_feedforward_layernorm_2.forward(x));
-        let moe_out = self.post_feedforward_layernorm_2.forward(moe_out);
-
-        let ff_out = self.post_feedforward_layernorm.forward(dense_ff + moe_out);
-        let x = x + ff_out;
-        let x = x * self
-            .layer_scalar
-            .expand_lhs(&x.dims()[..x.dims().len() - 1]);
-
-        (x, k_cache_out, v_cache_out)
-    }
+    (attn_out, k_cache_out, v_cache_out)
 }
 
 fn dense_ffn(x: GraphTensor, gate: GraphTensor, up: GraphTensor, down: GraphTensor) -> GraphTensor {

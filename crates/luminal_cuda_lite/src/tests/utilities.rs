@@ -149,7 +149,7 @@ impl CudaFuzzInput {
         }
     }
 
-    fn apply_native(&self, rt: &mut NativeRuntime) {
+    fn apply_reference(&self, rt: &mut ReferenceRuntime) {
         match self {
             Self::F32(id, data) => rt.set_data(*id, data.clone()),
             Self::Bf16(id, data) => rt.set_data(*id, data.clone()),
@@ -191,7 +191,7 @@ pub struct SearchEquivalenceFuzzConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SearchEquivalenceReference {
     FirstCudaExtraction,
-    NativeRuntime,
+    ReferenceRuntime,
 }
 
 impl Default for SearchEquivalenceFuzzConfig {
@@ -258,13 +258,8 @@ impl<'a> CudaSearchEquivalenceFuzzer<'a> {
         self
     }
 
-    pub fn build_options(mut self, build_options: CompileOptions) -> Self {
-        self.config.build_options = build_options;
-        self
-    }
-
-    pub fn native_reference(mut self) -> Self {
-        self.config.reference = SearchEquivalenceReference::NativeRuntime;
+    pub fn reference_runtime(mut self) -> Self {
+        self.config.reference = SearchEquivalenceReference::ReferenceRuntime;
         self
     }
 
@@ -325,34 +320,34 @@ pub fn fuzz_cuda_search_space_equivalence(
         "fuzz harness needs at least one output"
     );
 
-    let native_reference_outputs = if config.reference == SearchEquivalenceReference::NativeRuntime
-    {
-        cx.build_search_space::<NativeRuntime>(CompileOptions::default());
-        let mut native_rng = StdRng::seed_from_u64(config.seed);
-        let mut native_rt = cx.search_with_rng(
-            NativeRuntime::default(),
-            CompileOptions::new(1),
-            &mut native_rng,
-        );
-        for input in inputs {
-            input.apply_native(&mut native_rt);
-        }
-        native_rt.execute(&cx.dyn_map);
-        Some(
-            outputs
-                .iter()
-                .map(|out| native_rt.get_f32(out.id).clone())
-                .collect::<Vec<_>>(),
-        )
-    } else {
-        None
-    };
+    let reference_runtime_outputs =
+        if config.reference == SearchEquivalenceReference::ReferenceRuntime {
+            cx.build_search_space::<ReferenceRuntime>(CompileOptions::default());
+            let mut reference_rng = StdRng::seed_from_u64(config.seed);
+            let mut reference_rt = cx.search_with_rng(
+                ReferenceRuntime::default(),
+                CompileOptions::default().search_graph_limit(1),
+                &mut reference_rng,
+            );
+            for input in inputs {
+                input.apply_reference(&mut reference_rt);
+            }
+            reference_rt.execute(&cx.dyn_map);
+            Some(
+                outputs
+                    .iter()
+                    .map(|out| reference_rt.get_f32(out.id).clone())
+                    .collect::<Vec<_>>(),
+            )
+        } else {
+            None
+        };
 
     cx.build_search_space::<CudaRuntime>(config.build_options);
 
     let egraph = cx.egraph().expect("search space should be built");
     let ops = cx.egglog_ops().expect("search ops should be built");
-    let seed = if native_reference_outputs.is_some() {
+    let seed = if reference_runtime_outputs.is_some() {
         config.seed.wrapping_add(0xC0DA_C0DA)
     } else {
         config.seed
@@ -363,9 +358,9 @@ pub fn fuzz_cuda_search_space_equivalence(
     prev_selected.insert(hash_choice_set(&base));
 
     let mut skipped_invalid = 0usize;
-    let reference_is_cuda = native_reference_outputs.is_none();
+    let reference_is_cuda = reference_runtime_outputs.is_none();
     let (reference_hash, reference_outputs, reference_llir_summary, mut tested) =
-        if let Some(reference_outputs) = native_reference_outputs {
+        if let Some(reference_outputs) = reference_runtime_outputs {
             (0, reference_outputs, None, 0usize)
         } else {
             let mut attempts = 0usize;
@@ -609,7 +604,7 @@ fn assert_fuzz_outputs_close(
     }
 }
 
-fn summarize_llir(llir_graph: &LLIRGraph) -> String {
+pub(crate) fn summarize_llir(llir_graph: &LLIRGraph) -> String {
     llir_graph
         .node_indices()
         .map(|idx| {
@@ -629,6 +624,14 @@ fn summarize_llir(llir_graph: &LLIRGraph) -> String {
 pub fn gpu_compute_cap() -> Option<(i32, i32)> {
     let ctx = CudaContext::new(0).ok()?;
     ctx.compute_capability().ok()
+}
+
+/// FlashInfer needs Ampere+ (sm_80; its kernels use cp.async). Tests that
+/// directly execute FlashInfer (bypassing the search, which gates the rule
+/// itself) must skip on older arches like the T4 (sm_75), where the kernel
+/// symbol is absent at launch (CUDA_ERROR_NOT_FOUND).
+pub fn gpu_supports_flashinfer() -> bool {
+    crate::device_compute_major() >= 8
 }
 
 /// Check if the current GPU supports the given dtype for tensor core / WMMA operations.
@@ -701,7 +704,7 @@ pub fn test_unary_cuda<T: TestDType>(
 
     let input_data = generator(n_elements, seed);
     rt.set_data(a, input_data.clone());
-    rt = cx.search(rt, CompileOptions::new(5));
+    rt = cx.search(rt, CompileOptions::default().search_graph_limit(5));
     rt.execute(&cx.dyn_map);
 
     let result = T::get_from_runtime(&rt, b.id);
@@ -776,7 +779,7 @@ pub fn test_binary_cuda<T: TestDType>(
     let b_data = b_generator(b_elements, seed.wrapping_add(1));
     rt.set_data(a, a_data.clone());
     rt.set_data(b, b_data.clone());
-    rt = cx.search(rt, CompileOptions::new(5));
+    rt = cx.search(rt, CompileOptions::default().search_graph_limit(5));
     rt.execute(&cx.dyn_map);
 
     let result = T::get_from_runtime(&rt, c.id);
@@ -844,7 +847,7 @@ pub fn test_mod(
     let b_data = random_f32_vec(b_elements, seed.wrapping_add(1), 0.1, 0.5);
     rt.set_data(a, a_data.clone());
     rt.set_data(b, b_data.clone());
-    rt = cx.search(rt, CompileOptions::new(5));
+    rt = cx.search(rt, CompileOptions::default().search_graph_limit(5));
     rt.execute(&cx.dyn_map);
 
     let result = rt.get_f32(c);
@@ -982,11 +985,20 @@ pub fn fuzz_genomes<T: TestDType>(
             // a search-time scaffold the auto-roll prepass introduces.
             unroll_loops_in_llir(&mut llir_graph);
 
-            let mut rt = CudaRuntime::initialize(stream.clone());
-            rt.load_llir(&llir_graph);
-            setup_inputs(&mut rt);
-            rt.execute(&cx.dyn_map);
-            let result = T::get_from_runtime(&rt, output_id);
+            // The search catches candidates that fail to load/materialize
+            // (e.g. the GEMM-chain "missing cached buffer" corner case) and
+            // skips them; mirror that here so the fuzz exercises the same
+            // candidate set the search can actually select.
+            let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let mut rt = CudaRuntime::initialize(stream.clone());
+                rt.load_llir(&llir_graph);
+                setup_inputs(&mut rt);
+                rt.execute(&cx.dyn_map);
+                T::get_from_runtime(&rt, output_id)
+            }));
+            let Ok(result) = run else {
+                continue;
+            };
             T::assert_match(&result, expected, rtol, atol);
 
             tested += 1;

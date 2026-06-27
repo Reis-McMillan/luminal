@@ -455,6 +455,13 @@ pub fn interval_facts_egglog(
             term_to_egglog(&interval_upper(var_expr)),
             interval.max
         ));
+        if interval.min == interval.max {
+            out.push_str(&format!(
+                "(union {} {})\n",
+                term_to_egglog(&mvar(str(&var.to_string()))),
+                term_to_egglog(&num(i64(interval.min)))
+            ));
+        }
     }
     out
 }
@@ -539,20 +546,21 @@ fn base_expression_egglog_impl(use_interval_analysis: bool) -> String {
 
     // Register all sorts
     s.register(&mut p);
-    if use_interval_analysis {
-        p.add_function(FunctionDef {
-            name: "lower".to_string(),
-            args: vec![EXPRESSION.name.to_string()],
-            ret: I64.name.to_string(),
-            merge: Some("(max old new)".to_string()),
-        });
-        p.add_function(FunctionDef {
-            name: "upper".to_string(),
-            args: vec![EXPRESSION.name.to_string()],
-            ret: I64.name.to_string(),
-            merge: Some("(min old new)".to_string()),
-        });
-    }
+    // Always define interval functions so backend rewrites can use interval
+    // facts as optional guards. When interval analysis is disabled these
+    // functions simply have no values, so guarded rules do not fire.
+    p.add_function(FunctionDef {
+        name: "lower".to_string(),
+        args: vec![EXPRESSION.name.to_string()],
+        ret: I64.name.to_string(),
+        merge: Some("(max old new)".to_string()),
+    });
+    p.add_function(FunctionDef {
+        name: "upper".to_string(),
+        args: vec![EXPRESSION.name.to_string()],
+        ret: I64.name.to_string(),
+        merge: Some("(min old new)".to_string()),
+    });
 
     // ---- Algebraic rewrites ----
     // Commutativity

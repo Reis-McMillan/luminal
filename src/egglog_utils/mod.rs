@@ -30,7 +30,33 @@ const EGGLOG_RULESETS: &[&str] = &[
     "fusion_pair",
     "fusion_grow",
     "fusion_merge",
+    // One-shot structural fusion rules (large joins), run once in the
+    // dedicated "fuse late" phase instead of inside the saturating main
+    // cycles. The _pre ruleset holds producer stages (e.g. the RoPE angle
+    // relation) consumed by rules in the main late ruleset.
+    "kernel_fuse_late_pre",
+    "kernel_fuse_late",
+    // Expensive one-shot rules that consume facts produced by the earlier
+    // fuse-late runs; scheduled exactly once at the end of the phase.
+    "kernel_fuse_late2",
 ];
+
+fn parse_log_flag(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+pub fn log_channel_enabled(option_enabled: bool, channel_env: &str) -> bool {
+    if std::env::var("LUMINAL_LOG").is_ok_and(|value| parse_log_flag(&value)) {
+        return true;
+    }
+    if let Ok(value) = std::env::var(channel_env) {
+        return parse_log_flag(&value);
+    }
+    option_enabled
+}
 
 #[derive(Debug, Clone)]
 struct EgglogSchedulePhase {
@@ -142,6 +168,10 @@ pub fn full_egglog(program: &str, ops: &[Arc<Box<dyn EgglogOp>>], cleanup: bool)
 /// trait objects in `ops`.
 pub struct OpTextParts {
     op_defs: String,
+    /// Backend-provided egglog text (see [`crate::op::Runtime::extra_egglog`]),
+    /// spliced in right after `op_defs` and before the rewrite rules. Empty for
+    /// core / the reference backend.
+    extra_egglog: String,
     cleanups: String,
     /// Names of op kinds that are eligible for cleanup (cleanup() == true).
     /// Used by the Rust post-processing pass to safely strip HLIR ops only
@@ -170,6 +200,9 @@ impl OpTextParts {
             .collect();
         Self {
             op_defs: op_defs_string(ops),
+            // Default empty; the backend's Runtime::extra_egglog() is spliced in
+            // by the Rt-aware callers (build_search_space) after construction.
+            extra_egglog: String::new(),
             // The egglog `cleanup` ruleset deletes HLIR ops unconditionally,
             // even when no kernel rewrite fired in their eclass. On large
             // graphs (e.g. YOLO v11) that produces empty eclasses and the
@@ -252,6 +285,22 @@ fn egglog_main_cycle_phases(cycle: usize, use_interval_analysis: bool) -> Vec<Eg
 
 fn egglog_final_phases(use_interval_analysis: bool) -> Vec<EgglogSchedulePhase> {
     vec![
+        // One-shot structural fusion rules with large joins. Running them
+        // once here (dtype facts present, raw HLIR rows not yet deleted by
+        // the cleanup phases) instead of inside the saturating main cycles
+        // avoids re-evaluating tens-of-seconds joins on every iteration.
+        // `seq` so each ruleset's join runs exactly once: producer stages
+        // first, then the consumer rules.
+        EgglogSchedulePhase {
+            name: "fuse late".to_string(),
+            // The second `kernel_fuse_late` run consumes relation facts the
+            // first run produced (e.g. rope_rotated); semi-naive evaluation
+            // makes it a cheap delta join.
+            // Depth = the longest relation cascade: invf(pre) → angles →
+            // rotation → concat each consume the previous run's facts.
+            schedule: "(seq kernel_fuse_late_pre kernel_fuse_late kernel_fuse_late kernel_fuse_late kernel_fuse_late2)"
+                .to_string(),
+        },
         EgglogSchedulePhase {
             name: "final expr".to_string(),
             schedule: expr_schedule(use_interval_analysis).to_string(),
@@ -329,6 +378,7 @@ fn egglog_setup_with_options(
         egglog_ruleset_declarations(),
         base_program,
         parts.op_defs.clone(),
+        parts.extra_egglog.clone(),
         parts.cleanups.clone(),
         base::base_cleanup_egglog(),
         parts.rewrites.clone(),
@@ -706,10 +756,8 @@ fn metric_duration(duration: Duration) -> String {
     pretty_duration::pretty_duration(&duration, None)
 }
 
-/// Verbose per-rule / per-ruleset printing. Off by default — the cycle
-/// header, summary header, and final timing line stay; the breakdown
-/// tables and `print_serialized_shape` ("Egglog extract root shape …")
-/// are suppressed unless `EGGLOG_DEBUG=1`.
+/// Extra per-rule / per-ruleset printing. Requires the normal egglog log
+/// channel plus `EGGLOG_DEBUG=1`.
 fn egglog_debug() -> bool {
     std::env::var("EGGLOG_DEBUG").is_ok_and(|v| !v.is_empty() && v != "0")
 }
@@ -891,7 +939,10 @@ fn print_slow_phase_detail(
     }
 }
 
-fn print_run_summary(run_report: &EgglogRunReport) {
+fn print_run_summary_with_log(run_report: &EgglogRunReport, log: bool) {
+    if !log {
+        return;
+    }
     eprintln!(
         "{}",
         format!(
@@ -978,8 +1029,8 @@ fn print_run_summary(run_report: &EgglogRunReport) {
     }
 }
 
-fn print_serialized_shape(s: &egglog::SerializeOutput) {
-    if !egglog_debug() {
+fn print_serialized_shape_with_log(s: &egglog::SerializeOutput, log: bool) {
+    if !log || !egglog_debug() {
         return;
     }
     let mut classes = FxHashSet::default();
@@ -1013,6 +1064,7 @@ fn run_schedule_phase(
     egraph: &mut egglog::EGraph,
     phases: &mut Vec<EgglogPhaseReport>,
     phase: &EgglogSchedulePhase,
+    log: bool,
 ) -> Result<bool, egglog::Error> {
     let command = format!("(run-schedule {})", phase.schedule);
     let tuples_before = egraph.num_tuples();
@@ -1032,22 +1084,24 @@ fn run_schedule_phase(
     let updated = report.updated;
     let iterations = report.iterations.len();
     let tuple_delta = tuples_after as isize - tuples_before as isize;
-    eprintln!(
-        "{}",
-        format!(
-            "   Egglog {:<28} {:>10} | tuples {} -> {} ({:+}) | updated={} | iterations={}",
-            phase.name,
-            metric_duration(elapsed),
-            tuples_before,
-            tuples_after,
-            tuple_delta,
-            updated,
-            iterations,
-        )
-        .cyan()
-    );
+    if log {
+        eprintln!(
+            "{}",
+            format!(
+                "   Egglog {:<28} {:>10} | tuples {} -> {} ({:+}) | updated={} | iterations={}",
+                phase.name,
+                metric_duration(elapsed),
+                tuples_before,
+                tuples_after,
+                tuple_delta,
+                updated,
+                iterations,
+            )
+            .cyan()
+        );
+    }
 
-    if egglog_debug() {
+    if log && egglog_debug() {
         let mut rulesets = report
             .search_and_apply_time_per_ruleset
             .keys()
@@ -1162,8 +1216,35 @@ pub fn run_egglog_with_report_late_passes_and_interval_analysis(
     late_passes: &[LateEgglogPass],
     use_interval_analysis: bool,
 ) -> Result<(SerializedEGraph, EgglogRunReport), egglog::Error> {
-    let op_parts = OpTextParts::new_with_late_passes(ops, cleanup, late_passes);
-    run_egglog_with_report_parts_impl(program, root, &op_parts, use_interval_analysis)
+    // This convenience wrapper doesn't expose the backend extra-egglog hook;
+    // the Rt-aware path (Graph::build_search_space) is what threads it.
+    run_egglog_with_report_late_passes_interval_analysis_and_log(
+        program,
+        root,
+        ops,
+        cleanup,
+        late_passes,
+        "",
+        use_interval_analysis,
+        log_channel_enabled(false, "EGGLOG_LOG"),
+    )
+}
+
+#[tracing::instrument(skip_all)]
+#[allow(clippy::too_many_arguments)]
+pub fn run_egglog_with_report_late_passes_interval_analysis_and_log(
+    program: &str,
+    root: &str,
+    ops: &[Arc<Box<dyn EgglogOp>>],
+    cleanup: bool,
+    late_passes: &[LateEgglogPass],
+    extra_egglog: &str,
+    use_interval_analysis: bool,
+    log: bool,
+) -> Result<(SerializedEGraph, EgglogRunReport), egglog::Error> {
+    let mut op_parts = OpTextParts::new_with_late_passes(ops, cleanup, late_passes);
+    op_parts.extra_egglog = extra_egglog.to_string();
+    run_egglog_with_report_parts_impl(program, root, &op_parts, use_interval_analysis, log)
 }
 
 /// Same as [`run_egglog_with_report`], but takes pre-computed [`OpTextParts`].
@@ -1176,7 +1257,13 @@ pub fn run_egglog_with_report_parts(
     root: &str,
     op_parts: &OpTextParts,
 ) -> Result<(SerializedEGraph, EgglogRunReport), egglog::Error> {
-    run_egglog_with_report_parts_impl(program, root, op_parts, false)
+    run_egglog_with_report_parts_impl(
+        program,
+        root,
+        op_parts,
+        false,
+        log_channel_enabled(false, "EGGLOG_LOG"),
+    )
 }
 
 fn run_egglog_with_report_parts_impl(
@@ -1184,13 +1271,14 @@ fn run_egglog_with_report_parts_impl(
     root: &str,
     op_parts: &OpTextParts,
     use_interval_analysis: bool,
+    log: bool,
 ) -> Result<(SerializedEGraph, EgglogRunReport), egglog::Error> {
     #[cfg(debug_assertions)]
     {
         use std::sync::atomic::{AtomicBool, Ordering};
 
         static WARNED_DEBUG_EGGLOG: AtomicBool = AtomicBool::new(false);
-        if !WARNED_DEBUG_EGGLOG.swap(true, Ordering::Relaxed) {
+        if log && !WARNED_DEBUG_EGGLOG.swap(true, Ordering::Relaxed) {
             eprintln!(
                 "{}",
                 "   Egglog warning: running in a debug build; model-sized saturation can be very slow. Use `cargo run --release ...` for CUDA model examples."
@@ -1219,23 +1307,25 @@ fn run_egglog_with_report_parts_impl(
     let setup_run_elapsed = setup_run_start.elapsed();
     let setup_tuples_after = egraph.num_tuples();
 
-    eprintln!(
-        "{}",
-        format!(
-            "   Egglog {:<28} {:>10} | text {} parse {} run {} | lines {} bytes {} | tuples {} -> {} ({:+})",
-            "setup",
-            metric_duration(setup_start.elapsed()),
-            metric_duration(setup_text_elapsed),
-            metric_duration(parse_elapsed),
-            metric_duration(setup_run_elapsed),
-            setup_lines,
-            setup_code.len(),
-            setup_tuples_before,
-            setup_tuples_after,
-            setup_tuples_after as isize - setup_tuples_before as isize,
-        )
-        .cyan()
-    );
+    if log {
+        eprintln!(
+            "{}",
+            format!(
+                "   Egglog {:<28} {:>10} | text {} parse {} run {} | lines {} bytes {} | tuples {} -> {} ({:+})",
+                "setup",
+                metric_duration(setup_start.elapsed()),
+                metric_duration(setup_text_elapsed),
+                metric_duration(parse_elapsed),
+                metric_duration(setup_run_elapsed),
+                setup_lines,
+                setup_code.len(),
+                setup_tuples_before,
+                setup_tuples_after,
+                setup_tuples_after as isize - setup_tuples_before as isize,
+            )
+            .cyan()
+        );
+    }
 
     trace!("{}", "Egglog running...".green());
     let mut phases = Vec::new();
@@ -1243,7 +1333,7 @@ fn run_egglog_with_report_parts_impl(
     for cycle in 1..=MAIN_SCHEDULE_MAX_CYCLES {
         let mut cycle_updated = false;
         for phase in egglog_main_cycle_phases(cycle, use_interval_analysis) {
-            cycle_updated |= run_schedule_phase(&mut egraph, &mut phases, &phase)?;
+            cycle_updated |= run_schedule_phase(&mut egraph, &mut phases, &phase, log)?;
         }
         if egraph.num_tuples() > MAIN_SCHEDULE_MAX_TUPLES {
             return Err(egglog::Error::BackendError(format!(
@@ -1263,10 +1353,10 @@ fn run_egglog_with_report_parts_impl(
         )));
     }
     for phase in egglog_final_phases(use_interval_analysis) {
-        run_schedule_phase(&mut egraph, &mut phases, &phase)?;
+        run_schedule_phase(&mut egraph, &mut phases, &phase, log)?;
     }
     for phase in &op_parts.late_phases {
-        run_schedule_phase(&mut egraph, &mut phases, phase)?;
+        run_schedule_phase(&mut egraph, &mut phases, phase, log)?;
     }
     let full_report = stage_report(&egraph, full_start.elapsed());
     trace_stage_report("---- Egglog Rule Matches ----", &full_report);
@@ -1276,7 +1366,7 @@ fn run_egglog_with_report_parts_impl(
         phases,
         total_time: total_start.elapsed(),
     };
-    print_run_summary(&run_report);
+    print_run_summary_with_log(&run_report, log);
     trace!(
         "{}",
         format!(
@@ -1293,7 +1383,7 @@ fn run_egglog_with_report_parts_impl(
         include_temporary_functions: false,
         max_calls_per_function: None,
     });
-    print_serialized_shape(&s);
+    print_serialized_shape_with_log(&s, log);
     // Convert to SerializedEGraph
     let mut classes = FxHashMap::default();
     for (node_id, node) in s.egraph.nodes.iter().filter(|(_, node)| !node.subsumed) {
@@ -1493,6 +1583,31 @@ pub fn run_egglog_with_late_passes_and_interval_analysis(
         cleanup,
         late_passes,
         use_interval_analysis,
+    )
+    .map(|(egraph, _)| egraph)
+}
+
+#[tracing::instrument(skip_all)]
+#[allow(clippy::too_many_arguments)]
+pub fn run_egglog_with_late_passes_interval_analysis_and_log(
+    program: &str,
+    root: &str,
+    ops: &[Arc<Box<dyn EgglogOp>>],
+    cleanup: bool,
+    late_passes: &[LateEgglogPass],
+    extra_egglog: &str,
+    use_interval_analysis: bool,
+    log: bool,
+) -> Result<SerializedEGraph, egglog::Error> {
+    run_egglog_with_report_late_passes_interval_analysis_and_log(
+        program,
+        root,
+        ops,
+        cleanup,
+        late_passes,
+        extra_egglog,
+        use_interval_analysis,
+        log,
     )
     .map(|(egraph, _)| egraph)
 }
@@ -1936,14 +2051,97 @@ pub fn extract_generation<'a>(
     prev_selected: &mut FxHashSet<u64>,
     rng: &mut impl Rng,
 ) -> Vec<EGraphChoiceSet<'a>> {
-    // Get list of mutable eclasses (those with more than one enode option)
     let mutable_classes: Vec<&ClassId> = egraph
         .eclasses
         .iter()
         .filter(|(_, (label, enodes))| is_search_choice_eclass(label) && enodes.len() > 1)
         .map(|(class_id, _)| class_id)
         .collect();
+    extract_generation_from_classes(
+        egraph,
+        base,
+        &mutable_classes,
+        generation_size,
+        mutations_per_generation,
+        prev_selected,
+        rng,
+    )
+}
 
+pub fn extract_reachable_generation<'a>(
+    egraph: &'a SerializedEGraph,
+    base: &EGraphChoiceSet<'a>,
+    generation_size: usize,
+    mutations_per_generation: usize,
+    prev_selected: &mut FxHashSet<u64>,
+    rng: &mut impl Rng,
+) -> Vec<EGraphChoiceSet<'a>> {
+    let mutable_classes = reachable_mutable_choice_classes(egraph, base);
+    extract_generation_from_classes(
+        egraph,
+        base,
+        &mutable_classes,
+        generation_size,
+        mutations_per_generation,
+        prev_selected,
+        rng,
+    )
+}
+
+fn reachable_mutable_choice_classes<'a>(
+    egraph: &'a SerializedEGraph,
+    choices: &EGraphChoiceSet<'a>,
+) -> Vec<&'a ClassId> {
+    let mut reachable = FxHashSet::default();
+    let mut class_seen = FxHashSet::default();
+    let mut mutable_classes = Vec::new();
+    let Some(root) = egraph.roots.first() else {
+        return mutable_classes;
+    };
+    let Some(root_choice) = choices.get(root) else {
+        return mutable_classes;
+    };
+    if let Some((label, enodes)) = egraph.eclasses.get(root) {
+        if is_search_choice_eclass(label) && enodes.len() > 1 && class_seen.insert(root) {
+            mutable_classes.push(root);
+        }
+    }
+
+    let mut stack = vec![*root_choice];
+    while let Some(node) = stack.pop() {
+        if !reachable.insert(node) {
+            continue;
+        }
+        let Some((_, children)) = egraph.enodes.get(node) else {
+            continue;
+        };
+        for child_class in children {
+            let Some((label, enodes)) = egraph.eclasses.get(child_class) else {
+                continue;
+            };
+            if is_search_choice_eclass(label) {
+                if enodes.len() > 1 && class_seen.insert(child_class) {
+                    mutable_classes.push(child_class);
+                }
+                if let Some(chosen_node) = choices.get(child_class) {
+                    stack.push(*chosen_node);
+                }
+            }
+        }
+    }
+
+    mutable_classes
+}
+
+fn extract_generation_from_classes<'a>(
+    egraph: &'a SerializedEGraph,
+    base: &EGraphChoiceSet<'a>,
+    mutable_classes: &[&'a ClassId],
+    generation_size: usize,
+    mutations_per_generation: usize,
+    prev_selected: &mut FxHashSet<u64>,
+    rng: &mut impl Rng,
+) -> Vec<EGraphChoiceSet<'a>> {
     // If there are no mutable classes, we can only return the base if it's unseen
     if mutable_classes.is_empty() {
         let h = hash_choice_set(base);
@@ -2218,11 +2416,34 @@ pub fn egglog_to_llir_from_root<'a>(
 #[cfg(test)]
 mod tests {
     use super::{
-        LateEgglogPass, SerializedEGraph, count_choice_sets_up_to, run_egglog_with_late_passes,
+        LateEgglogPass, OpTextParts, SerializedEGraph, count_choice_sets_up_to,
+        egglog_setup_with_options, run_egglog_with_late_passes,
     };
     use crate::prelude::FxHashMap;
     use crate::{hlir::HLIROps, op::IntoEgglogOp};
     use egraph_serialize::{ClassId, NodeId};
+
+    // The backend extra-egglog hook (Runtime::extra_egglog) is carried on
+    // OpTextParts.extra_egglog and must be spliced into the program exactly once,
+    // after the op constructor defs and before the rewrite rules.
+    #[test]
+    fn extra_egglog_is_spliced_between_op_defs_and_rewrites() {
+        let marker = "(function tron_is_attn_softmax (IR IR) bool :merge (or old new))";
+
+        // Default: no extra egglog → marker absent.
+        let parts = OpTextParts::new(&[], false);
+        assert!(parts.extra_egglog.is_empty());
+        let plain = egglog_setup_with_options("", &parts, false);
+        assert!(!plain.contains(marker));
+
+        // With a backend declaration set, it appears in the program exactly once.
+        // (Its position — after op_defs, before the rewrite rules — is fixed by
+        // the array-literal order in egglog_setup_with_options.)
+        let mut parts = OpTextParts::new(&[], false);
+        parts.extra_egglog = marker.to_string();
+        let program = egglog_setup_with_options("", &parts, false);
+        assert_eq!(program.matches(marker).count(), 1, "spliced exactly once");
+    }
 
     fn eclass(id: &str, label: &str, n_nodes: usize) -> (ClassId, (String, Vec<NodeId>)) {
         (

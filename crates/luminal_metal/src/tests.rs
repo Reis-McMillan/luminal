@@ -41,7 +41,11 @@ fn bytes_of<T: bytemuck::NoUninit>(values: &[T]) -> Vec<u8> {
 
 fn search_candidates(cx: &mut Graph, rt: MetalRuntime, limit: usize) -> MetalRuntime {
     let mut rng = StdRng::seed_from_u64(0);
-    cx.search_with_rng(rt, CompileOptions::new(limit), &mut rng)
+    cx.search_with_rng(
+        rt,
+        CompileOptions::default().search_graph_limit(limit),
+        &mut rng,
+    )
 }
 
 fn egraph_has_op(cx: &Graph, op_name: &str) -> bool {
@@ -301,7 +305,7 @@ fn dynamic_dim_sum_reduce_runs() {
     let mut rt = MetalRuntime::initialize(());
     rt.set_data(input, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
 
-    rt = cx.search(rt, CompileOptions::new(1));
+    rt = cx.search(rt, CompileOptions::default().search_graph_limit(1));
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
 
@@ -322,7 +326,7 @@ fn metal_bucketed_dynamic_dim_dispatches_correct_graph() {
 
     let mut rt = MetalRuntime::initialize(());
     rt.set_data(input, vec![1.0f32; 4]);
-    rt = cx.search(rt, CompileOptions::new(5));
+    rt = cx.search(rt, CompileOptions::default().search_graph_limit(5));
 
     cx.set_dim('s', 1);
     let s1_input = vec![1.0, 2.0, 3.0, 4.0];
@@ -350,7 +354,7 @@ fn metal_int_arithmetic_preserves_large_values() {
     cx.build_search_space::<MetalRuntime>(CompileOptions::default());
     let mut rt = MetalRuntime::initialize(());
     rt.set_data(token, &[16_385i32]);
-    rt = cx.search(rt, CompileOptions::new(1));
+    rt = cx.search(rt, CompileOptions::default().search_graph_limit(1));
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
 
@@ -373,7 +377,7 @@ proptest! {
         let mut rt = MetalRuntime::initialize(());
         let input_values: Vec<f32> = values.into_iter().take(len).collect();
         rt.set_data(input, &input_values);
-        rt = cx.search(rt, CompileOptions::new(5));
+        rt = cx.search(rt, CompileOptions::default().search_graph_limit(5));
         rt.allocate_intermediate_buffers(&cx.dyn_map);
         rt.execute(&cx.dyn_map);
 
@@ -395,7 +399,7 @@ proptest! {
         let mut rt = MetalRuntime::initialize(());
         let input_values: Vec<f32> = values.into_iter().take(len).collect();
         rt.set_data(input, &input_values);
-        rt = cx.search(rt, CompileOptions::new(5));
+        rt = cx.search(rt, CompileOptions::default().search_graph_limit(5));
         rt.allocate_intermediate_buffers(&cx.dyn_map);
         rt.execute(&cx.dyn_map);
 
@@ -417,7 +421,7 @@ proptest! {
         let mut rt = MetalRuntime::initialize(());
         let input_values: Vec<f32> = values.into_iter().take(len).collect();
         rt.set_data(input, &input_values);
-        rt = cx.search(rt, CompileOptions::new(5));
+        rt = cx.search(rt, CompileOptions::default().search_graph_limit(5));
         rt.allocate_intermediate_buffers(&cx.dyn_map);
         rt.execute(&cx.dyn_map);
 
@@ -425,16 +429,6 @@ proptest! {
         let expected: Vec<f32> = input_values.iter().map(|v| 2.0f32.powf(*v)).collect();
         assert_close(&out, &expected, 0.001);
     }
-}
-
-#[test]
-fn metal_build_search_space_accepts_memory_budget() {
-    let mut cx = Graph::default();
-    let a = cx.tensor(4);
-    let b = cx.tensor(4);
-    (a * b).output();
-
-    cx.build_search_space::<MetalRuntime>(CompileOptions::default().max_memory_mib(1));
 }
 
 /// Simple deterministic test for add
@@ -449,7 +443,7 @@ fn metal_simple_add() {
     let mut rt = MetalRuntime::initialize(());
     rt.set_data(a, &[1.0, 2.0, 3.0, 4.0]);
     rt.set_data(b, &[5.0, 6.0, 7.0, 8.0]);
-    rt = cx.search(rt, CompileOptions::new(5));
+    rt = cx.search(rt, CompileOptions::default().search_graph_limit(5));
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
 
@@ -469,7 +463,7 @@ fn metal_simple_mul() {
     let mut rt = MetalRuntime::initialize(());
     rt.set_data(a, &[1.0, 2.0, 3.0, 4.0]);
     rt.set_data(b, &[5.0, 6.0, 7.0, 8.0]);
-    rt = cx.search(rt, CompileOptions::new(5));
+    rt = cx.search(rt, CompileOptions::default().search_graph_limit(5));
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
 
@@ -487,7 +481,7 @@ fn metal_simple_exp2() {
     cx.build_search_space::<MetalRuntime>(CompileOptions::default());
     let mut rt = MetalRuntime::initialize(());
     rt.set_data(input, &[0.0, 1.0, 2.0, 3.0]);
-    rt = cx.search(rt, CompileOptions::new(5));
+    rt = cx.search(rt, CompileOptions::default().search_graph_limit(5));
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
 
@@ -504,7 +498,7 @@ fn metal_simple_log2() {
     cx.build_search_space::<MetalRuntime>(CompileOptions::default());
     let mut rt = MetalRuntime::initialize(());
     rt.set_data(input, &[1.0, 2.0, 4.0, 8.0]);
-    rt = cx.search(rt, CompileOptions::new(5));
+    rt = cx.search(rt, CompileOptions::default().search_graph_limit(5));
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
 
@@ -529,7 +523,7 @@ fn metal_simple_sin() {
             3.0 * std::f32::consts::FRAC_PI_2,
         ],
     );
-    rt = cx.search(rt, CompileOptions::new(5));
+    rt = cx.search(rt, CompileOptions::default().search_graph_limit(5));
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
 
@@ -546,7 +540,7 @@ fn metal_simple_sqrt() {
     cx.build_search_space::<MetalRuntime>(CompileOptions::default());
     let mut rt = MetalRuntime::initialize(());
     rt.set_data(input, &[1.0, 4.0, 9.0, 16.0]);
-    rt = cx.search(rt, CompileOptions::new(5));
+    rt = cx.search(rt, CompileOptions::default().search_graph_limit(5));
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
 
@@ -563,7 +557,7 @@ fn metal_simple_recip() {
     cx.build_search_space::<MetalRuntime>(CompileOptions::default());
     let mut rt = MetalRuntime::initialize(());
     rt.set_data(input, &[1.0, 2.0, 4.0, 5.0]);
-    rt = cx.search(rt, CompileOptions::new(5));
+    rt = cx.search(rt, CompileOptions::default().search_graph_limit(5));
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
 
@@ -582,7 +576,7 @@ fn metal_simple_mod() {
     let mut rt = MetalRuntime::initialize(());
     rt.set_data(a, &[7.0, 10.0, 15.0, 8.5]);
     rt.set_data(b, &[3.0, 4.0, 6.0, 2.5]);
-    rt = cx.search(rt, CompileOptions::new(5));
+    rt = cx.search(rt, CompileOptions::default().search_graph_limit(5));
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
 
@@ -601,7 +595,7 @@ fn metal_simple_less_than() {
     let mut rt = MetalRuntime::initialize(());
     rt.set_data(a, &[1.0, 5.0, 3.0, 4.0]);
     rt.set_data(b, &[2.0, 3.0, 3.0, 5.0]);
-    rt = cx.search(rt, CompileOptions::new(5));
+    rt = cx.search(rt, CompileOptions::default().search_graph_limit(5));
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
 
@@ -621,7 +615,7 @@ fn metal_simple_sum_reduce() {
     let mut rt = MetalRuntime::initialize(());
     // [[1,2,3,4], [5,6,7,8]] -> [10, 26]
     rt.set_data(input, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]);
-    rt = cx.search(rt, CompileOptions::new(5));
+    rt = cx.search(rt, CompileOptions::default().search_graph_limit(5));
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
 
@@ -640,7 +634,7 @@ fn metal_simple_max_reduce() {
     let mut rt = MetalRuntime::initialize(());
     // [[1,4,2,3], [8,5,7,6]] -> [4, 8]
     rt.set_data(input, &[1.0, 4.0, 2.0, 3.0, 8.0, 5.0, 7.0, 6.0]);
-    rt = cx.search(rt, CompileOptions::new(5));
+    rt = cx.search(rt, CompileOptions::default().search_graph_limit(5));
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
 
@@ -657,7 +651,7 @@ fn metal_f16_cast_roundtrip() {
     cx.build_search_space::<MetalRuntime>(CompileOptions::default());
     let mut rt = MetalRuntime::initialize(());
     rt.set_data(input, &[1.0, -2.5, 3.25, 4.75]);
-    rt = cx.search(rt, CompileOptions::new(3));
+    rt = cx.search(rt, CompileOptions::default().search_graph_limit(3));
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
 
@@ -678,7 +672,7 @@ fn metal_f16_intermediate_add_roundtrip() {
     let mut rt = MetalRuntime::initialize(());
     rt.set_data(a, &[1.0, 2.0, -3.0, 4.5]);
     rt.set_data(b, &[0.5, -1.0, 3.0, 0.25]);
-    rt = cx.search(rt, CompileOptions::new(3));
+    rt = cx.search(rt, CompileOptions::default().search_graph_limit(3));
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
 
@@ -1026,7 +1020,7 @@ fn metal_rms_norm() {
 
     rt.set_data(input, &input_data);
     rt.set_data(weight, &weight_data);
-    rt = cx.search(rt, CompileOptions::new(1));
+    rt = cx.search(rt, CompileOptions::default().search_graph_limit(1));
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
 
@@ -1066,7 +1060,7 @@ fn metal_self_attention() {
     rt.set_data(wk, &wk_data);
     rt.set_data(wv, &wv_data);
     rt.set_data(wo, &wo_data);
-    rt = cx.search(rt, CompileOptions::new(1));
+    rt = cx.search(rt, CompileOptions::default().search_graph_limit(1));
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
 
@@ -1125,7 +1119,7 @@ fn metal_self_attention_f16_weights() {
     rt.set_data(wk, to_f16_vec(&wk_data));
     rt.set_data(wv, to_f16_vec(&wv_data));
     rt.set_data(wo, to_f16_vec(&wo_data));
-    rt = cx.search(rt, CompileOptions::new(1));
+    rt = cx.search(rt, CompileOptions::default().search_graph_limit(1));
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
 
@@ -1169,7 +1163,7 @@ fn metal_swiglu_mlp() {
     rt.set_data(w_gate, &gate_data);
     rt.set_data(w_up, &up_data);
     rt.set_data(w_down, &down_data);
-    rt = cx.search(rt, CompileOptions::new(1));
+    rt = cx.search(rt, CompileOptions::default().search_graph_limit(1));
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
 
@@ -1219,7 +1213,7 @@ fn metal_mini_transformer_layer() {
     for (tensor, data) in &weight_data {
         rt.set_data(*tensor, data);
     }
-    rt = cx.search(rt, CompileOptions::new(1));
+    rt = cx.search(rt, CompileOptions::default().search_graph_limit(1));
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
 
@@ -1285,7 +1279,7 @@ fn metal_mini_transformer_layer_f16_intermediate() {
     for (tensor, data) in &weight_data {
         rt.set_data(*tensor, data);
     }
-    rt = cx.search(rt, CompileOptions::new(1));
+    rt = cx.search(rt, CompileOptions::default().search_graph_limit(1));
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
 
@@ -1327,7 +1321,7 @@ fn test_scatter_basic() {
     rt.set_data(src, &[10.0, 20.0, 30.0]);
     rt.set_data(indexes, &[1.0, 3.0, 4.0]);
     rt.set_data(dest, &[0.0, 0.0, 0.0, 0.0, 0.0]);
-    rt = cx.search(rt, CompileOptions::new(1));
+    rt = cx.search(rt, CompileOptions::default().search_graph_limit(1));
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
 
@@ -1349,7 +1343,7 @@ fn test_scatter_buffer_roundtrip() {
     rt.set_data(src, &[0.0]);
     rt.set_data(indexes, &[0.0]);
     rt.set_zeros(cache, 4 * std::mem::size_of::<f32>());
-    rt = cx.search(rt, CompileOptions::new(1));
+    rt = cx.search(rt, CompileOptions::default().search_graph_limit(1));
 
     for (pos, value, expected) in [
         (0, 10.0, [10.0, 0.0, 0.0, 0.0]),
@@ -1383,7 +1377,7 @@ fn test_load_safetensors_f32_survives_search_and_overrides_input_data() {
     rt.set_data(weights, &[99.0, 99.0, 99.0]);
     rt.set_data(bias, &[0.5, 1.0, -1.5]);
     rt.load_safetensors(&cx, path.to_str().unwrap());
-    rt = cx.search(rt, CompileOptions::new(1));
+    rt = cx.search(rt, CompileOptions::default().search_graph_limit(1));
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
 
@@ -1448,7 +1442,7 @@ fn test_load_safetensors_converts_supported_float_dtypes() {
     cx.build_search_space::<MetalRuntime>(CompileOptions::default());
     let mut rt = MetalRuntime::initialize(());
     rt.load_safetensors(&cx, path.to_str().unwrap());
-    rt = cx.search(rt, CompileOptions::new(1));
+    rt = cx.search(rt, CompileOptions::default().search_graph_limit(1));
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
 
@@ -1475,7 +1469,7 @@ fn test_gather_noncontiguous_data_uses_data_shape() {
         &[0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0],
     );
     rt.set_data(indexes, &[0.0, 3.0, 4.0, 7.0]);
-    rt = cx.search(rt, CompileOptions::new(1));
+    rt = cx.search(rt, CompileOptions::default().search_graph_limit(1));
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
 
@@ -1495,7 +1489,7 @@ fn test_scatter_into_nonzero_dest() {
     rt.set_data(src, &[99.0]);
     rt.set_data(indexes, &[2f32]);
     rt.set_data(dest, &[1.0, 2.0, 3.0, 4.0, 5.0]);
-    rt = cx.search(rt, CompileOptions::new(1));
+    rt = cx.search(rt, CompileOptions::default().search_graph_limit(1));
     let kernels = rt.debug_kernel_ops();
     assert!(
         kernels.iter().any(|k| k.contains("MetalScatterNoCopy")),
@@ -1522,7 +1516,7 @@ fn test_scatter_no_copy_remove_buffer_aliases_dest() {
     rt.set_data(src, &[7.0, 8.0]);
     rt.set_data(indexes, &[1.0, 3.0]);
     rt.set_data(dest, &[10.0, 20.0, 30.0, 40.0, 50.0]);
-    rt = cx.search(rt, CompileOptions::new(1));
+    rt = cx.search(rt, CompileOptions::default().search_graph_limit(1));
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
 
@@ -1551,7 +1545,7 @@ fn test_scatter_no_copy_handles_2d_destination() {
     rt.set_data(src, &[9.0, 8.0]);
     rt.set_data(indexes, &[2.0, 4.0]);
     rt.set_data(dest, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
-    rt = cx.search(rt, CompileOptions::new(1));
+    rt = cx.search(rt, CompileOptions::default().search_graph_limit(1));
     let kernels = rt.debug_kernel_ops();
     assert!(
         kernels.iter().any(|k| k.contains("MetalScatterNoCopy")),
@@ -1578,7 +1572,7 @@ fn test_scatter_no_copy_not_selected_when_dest_has_another_consumer() {
     rt.set_data(src, &[99.0]);
     rt.set_data(indexes, &[1.0]);
     rt.set_data(dest, &[10.0, 20.0, 30.0, 40.0]);
-    rt = cx.search(rt, CompileOptions::new(1));
+    rt = cx.search(rt, CompileOptions::default().search_graph_limit(1));
     let kernels = rt.debug_kernel_ops();
     assert!(
         !kernels.iter().any(|k| k.contains("MetalScatterNoCopy")),
@@ -1605,7 +1599,7 @@ fn test_scatter_all_positions() {
     rt.set_data(src, &[40.0, 30.0, 20.0, 10.0]);
     rt.set_data(indexes, &[3.0, 2.0, 1.0, 0.0]);
     rt.set_data(dest, &[1.0, 2.0, 3.0, 4.0]);
-    rt = cx.search(rt, CompileOptions::new(1));
+    rt = cx.search(rt, CompileOptions::default().search_graph_limit(1));
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
 
@@ -1624,7 +1618,7 @@ fn test_gather_preserves_data_dtype() {
     let mut rt = MetalRuntime::initialize(());
     rt.set_data(data, &[1.25, 2.5]);
     rt.set_data(indexes, &[1.0]);
-    rt = cx.search(rt, CompileOptions::new(1));
+    rt = cx.search(rt, CompileOptions::default().search_graph_limit(1));
     rt.allocate_intermediate_buffers(&cx.dyn_map);
     rt.execute(&cx.dyn_map);
 

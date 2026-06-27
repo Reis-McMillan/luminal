@@ -66,3 +66,12 @@ fn _cuda_lite_factory_capsule<'py>(py: Python<'py>) -> PyResult<Bound<'py, PyCap
     let name = ::luminal::dyn_backend::BACKEND_FACTORY_CAPSULE_NAME.to_owned();
     PyCapsule::new(py, FnPtrWrapper(fptr), Some(name))
 }
+
+/// PyCapsule wrapping the rocm_lite backend factory.
+#[cfg(feature = "rocm")]
+#[pyfunction]
+fn _rocm_lite_factory_capsule<'py>(py: Python<'py>) -> PyResult<Bound<'py, PyCapsule>> {
+    let fptr = luminal_rocm_lite::dyn_backend::rocm_lite_factory as *const std::ffi::c_void;
+    let name = ::luminal::dyn_backend::BACKEND_FACTORY_CAPSULE_NAME.to_owned();
+    PyCapsule::new(py, FnPtrWrapper(fptr), Some(name))
+}

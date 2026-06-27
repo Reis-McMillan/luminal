@@ -16,6 +16,16 @@ def _detect_factory_capsule(example_inputs):
     first_tensor = next((t for t in (example_inputs or []) if torch.is_tensor(t)), None)
     device = first_tensor.device if first_tensor is not None else torch.device("cpu")
     if device.type == "cuda":
+        if getattr(torch.version, "hip", None) is not None:
+            try:
+                from .luminal import _rocm_lite_factory_capsule
+                return _rocm_lite_factory_capsule()
+            except (ImportError, AttributeError) as exc:
+                raise RuntimeError(
+                    "ROCm/HIP input was provided, but luminal_python was not built "
+                    "with the rocm feature. Rebuild with `--features rocm`."
+                ) from exc
+
         try:
             from .luminal import _cuda_lite_factory_capsule
 

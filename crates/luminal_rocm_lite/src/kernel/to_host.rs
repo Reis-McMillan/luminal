@@ -341,7 +341,7 @@ impl RocmGraphOp {
         match kernel_name {
             "Constant" | "Iota" => Some(0),
             "MaxReduce" | "MeanReduce" | "SumReduce" | "Cast" | "Exp" | "Exp2" | "Log2" | "Sin"
-            | "Recip" | "Sigmoid" | "Softmax" | "Sqrt" => Some(1),
+            | "Recip" | "Sigmoid" | "Sqrt" => Some(1),
             "Add" | "BatchMatMul" | "BatchMatVec" | "Embed" | "Gather" | "LessThan" | "Mod"
             | "Mul" => Some(2),
             "Scatter" | "ScatterNoCopy" => Some(3),

@@ -1184,22 +1184,12 @@ impl Runtime for RocmRuntime {
 
     fn late_egglog_passes(
         ops: &[Arc<Box<dyn luminal::op::EgglogOp>>],
-        options: &luminal::graph::CompileOptions,
+        _options: &luminal::graph::CompileOptions,
         dyn_map: &FxHashMap<char, usize>,
     ) -> Vec<luminal::egglog_utils::LateEgglogPass> {
         vec![crate::memory_analysis::rocm_memory_analysis_pass(
-            ops,
-            options.max_memory_bytes,
-            dyn_map,
+            ops, None, dyn_map,
         )]
-    }
-
-    fn estimate_graph_memory<'a>(
-        egraph: &'a luminal::egglog_utils::SerializedEGraph,
-        choices: &luminal::egglog_utils::EGraphChoiceSet<'a>,
-        dyn_map: &FxHashMap<char, usize>,
-    ) -> Option<usize> {
-        crate::memory_analysis::estimate_graph_memory_bytes(egraph, choices, dyn_map)
     }
 
     fn initialize(stream: Self::CompileArg) -> Self {
@@ -1286,18 +1276,6 @@ impl Runtime for RocmRuntime {
             .iter()
             .map(|b| b.arena.as_ref().map(|arena| arena.len()).unwrap_or(0))
             .sum()
-    }
-
-    fn planned_intermediate_buffer_bytes(&self) -> Option<usize> {
-        self.compiled_buckets
-            .get(self.active_bucket)
-            .map(|bucket| bucket.arena_bytes)
-    }
-
-    fn allocated_intermediate_buffer_bytes(&self) -> Option<usize> {
-        self.compiled_buckets
-            .get(self.active_bucket)
-            .map(|bucket| bucket.arena.as_ref().map(|arena| arena.len()).unwrap_or(0))
     }
 
     fn has_nan_outputs(&self, _llir_graph: &LLIRGraph, _dyn_map: &FxHashMap<char, usize>) -> bool {

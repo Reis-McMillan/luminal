@@ -1261,9 +1261,6 @@ fn local_output_bytes<'a>(
             list_cache,
             expr_cache,
         )?),
-        "KernelSoftmax" => Some(
-            n_elements_field(egraph, sort, kind_children, "shape", list_cache, expr_cache)? * 4,
-        ),
         "KernelEmbed" => {
             let batch = n_elements_field(
                 egraph,
@@ -1372,13 +1369,6 @@ fn output_bytes_rules(sort: &SortDef) -> Vec<String> {
             sort,
             "?__rocm_elems",
             "bool-shape",
-            None,
-            &["(= ?__rocm_elems (n_elements ?shape))"],
-        )],
-        "KernelSoftmax" => vec![output_bytes_rule_with_facts(
-            sort,
-            "(MMul ?__rocm_elems (MNum 4))",
-            "f32-shape",
             None,
             &["(= ?__rocm_elems (n_elements ?shape))"],
         )],

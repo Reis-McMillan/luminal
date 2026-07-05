@@ -34,7 +34,7 @@ fn test_bucket_dispatch_simple() {
     // Buckets now live on `CompileOptions` and are shared between the search-space
     // build and the search itself.
     let opts =
-        CompileOptions::new(5).dim_buckets('s', &[DimBucket::new(1, 1), DimBucket::new(2, 4)]);
+        CompileOptions::default().search_graph_limit(5).dim_buckets('s', &[DimBucket::new(1, 1), DimBucket::new(2, 4)]);
 
     cx.build_search_space::<RocmRuntime>(opts.clone());
     let mut rt = RocmRuntime::initialize(stream);
@@ -77,7 +77,7 @@ fn test_bucket_matmul_dynamic() {
     let (mut cx, a, b_tensor, c) = build_dynamic_matmul_graph(k, n);
 
     let opts =
-        CompileOptions::new(5).dim_buckets('s', &[DimBucket::new(1, 1), DimBucket::new(2, 8)]);
+        CompileOptions::default().search_graph_limit(5).dim_buckets('s', &[DimBucket::new(1, 1), DimBucket::new(2, 8)]);
 
     cx.build_search_space::<RocmRuntime>(opts.clone());
     let mut rt = RocmRuntime::initialize(stream);
@@ -144,7 +144,7 @@ fn test_bucket_results_match_unbucketed() {
     let input_data = random_f32_vec(12, seed, -1.0, 1.0);
     rt1.set_data(a1, input_data.clone());
     let mut rng1 = SmallRng::seed_from_u64(seed);
-    rt1 = cx1.search_with_rng(rt1, CompileOptions::new(5), &mut rng1);
+    rt1 = cx1.search_with_rng(rt1, CompileOptions::default().search_graph_limit(5), &mut rng1);
     rt1.set_data(a1, input_data.clone());
     rt1.execute(&cx1.dyn_map);
     let result_unbucketed = rt1.get_f32(b1);
@@ -152,7 +152,7 @@ fn test_bucket_results_match_unbucketed() {
     // Bucketed run with bucket that covers s=3
     let (mut cx2, a2, b2) = build_dynamic_add_graph();
     cx2.set_dim('s', 3);
-    let opts2 = CompileOptions::new(5).dim_buckets('s', &[DimBucket::new(1, 4)]);
+    let opts2 = CompileOptions::default().search_graph_limit(5).dim_buckets('s', &[DimBucket::new(1, 4)]);
     cx2.build_search_space::<RocmRuntime>(opts2.clone());
     let mut rt2 = RocmRuntime::initialize(stream.clone());
     rt2.set_data(a2, input_data.clone());
@@ -177,7 +177,7 @@ fn test_bucket_out_of_range_panics() {
 
     let (mut cx, a, _b) = build_dynamic_add_graph();
     let opts =
-        CompileOptions::new(3).dim_buckets('s', &[DimBucket::new(1, 1), DimBucket::new(2, 4)]);
+        CompileOptions::default().search_graph_limit(3).dim_buckets('s', &[DimBucket::new(1, 1), DimBucket::new(2, 4)]);
 
     cx.build_search_space::<RocmRuntime>(opts.clone());
     let mut rt = RocmRuntime::initialize(stream);
@@ -209,7 +209,7 @@ fn test_bucket_no_buckets_backward_compat() {
     let input_data = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
     rt.set_data(a, input_data.clone());
     let mut rng = SmallRng::seed_from_u64(42);
-    rt = cx.search_with_rng(rt, CompileOptions::new(3), &mut rng);
+    rt = cx.search_with_rng(rt, CompileOptions::default().search_graph_limit(3), &mut rng);
 
     rt.set_data(a, input_data.clone());
     rt.execute(&cx.dyn_map);
@@ -243,7 +243,7 @@ fn test_bucket_switch_preserves_weights() {
     let (mut cx, a, b_tensor, c) = build_dynamic_matmul_graph(k, n);
 
     let opts =
-        CompileOptions::new(5).dim_buckets('s', &[DimBucket::new(1, 1), DimBucket::new(2, 4)]);
+        CompileOptions::default().search_graph_limit(5).dim_buckets('s', &[DimBucket::new(1, 1), DimBucket::new(2, 4)]);
 
     cx.build_search_space::<RocmRuntime>(opts.clone());
     let mut rt = RocmRuntime::initialize(stream);
@@ -303,7 +303,7 @@ fn test_bucket_multiple_executions_same_bucket() {
 
     let (mut cx, a, b) = build_dynamic_add_graph();
 
-    let opts = CompileOptions::new(3).dim_buckets('s', &[DimBucket::new(1, 8)]);
+    let opts = CompileOptions::default().search_graph_limit(3).dim_buckets('s', &[DimBucket::new(1, 8)]);
 
     cx.build_search_space::<RocmRuntime>(opts.clone());
     let mut rt = RocmRuntime::initialize(stream);
@@ -331,7 +331,7 @@ fn test_bucket_multiple_executions_same_bucket() {
 fn test_bucket_overlapping_ranges_panics() {
     // Bucket validation now happens when buckets are attached to `CompileOptions`.
     let _opts =
-        CompileOptions::new(1).dim_buckets('s', &[DimBucket::new(1, 4), DimBucket::new(3, 8)]);
+        CompileOptions::default().search_graph_limit(1).dim_buckets('s', &[DimBucket::new(1, 4), DimBucket::new(3, 8)]);
 }
 
 #[test]

@@ -16,7 +16,7 @@ fn main() {
     rt.set_data(a, vec![1.0_f32; 64]);
     rt.set_data(b, vec![2.0_f32; 64]);
     cx.build_search_space::<RocmRuntime>(CompileOptions::default());
-    rt = cx.search(rt, CompileOptions::new(5));
+    rt = cx.search(rt, CompileOptions::default().search_graph_limit(5));
     rt.execute(&cx.dyn_map);
 
     let result = rt.get_f32(c);

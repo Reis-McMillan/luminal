@@ -145,7 +145,7 @@ impl RocmFuzzInput {
         }
     }
 
-    fn apply_native(&self, rt: &mut NativeRuntime) {
+    fn apply_native(&self, rt: &mut ReferenceRuntime) {
         match self {
             Self::F32(id, data) => rt.set_data(*id, data.clone()),
             Self::Bf16(id, data) => rt.set_data(*id, data.clone()),
@@ -317,11 +317,11 @@ pub fn fuzz_rocm_search_space_equivalence(
 
     let native_reference_outputs = if config.reference == SearchEquivalenceReference::NativeRuntime
     {
-        cx.build_search_space::<NativeRuntime>(CompileOptions::default());
+        cx.build_search_space::<ReferenceRuntime>(CompileOptions::default());
         let mut native_rng = StdRng::seed_from_u64(config.seed);
         let mut native_rt = cx.search_with_rng(
-            NativeRuntime::default(),
-            CompileOptions::new(1),
+            ReferenceRuntime::default(),
+            CompileOptions::default().search_graph_limit(1),
             &mut native_rng,
         );
         for input in inputs {
@@ -598,7 +598,7 @@ pub fn test_unary_rocm<T: TestDType>(
 
     let input_data = generator(n_elements, seed);
     rt.set_data(a, input_data.clone());
-    rt = cx.search(rt, CompileOptions::new(5));
+    rt = cx.search(rt, CompileOptions::default().search_graph_limit(5));
     rt.execute(&cx.dyn_map);
 
     let result = T::get_from_runtime(&rt, b.id);
@@ -673,7 +673,7 @@ pub fn test_binary_rocm<T: TestDType>(
     let b_data = b_generator(b_elements, seed.wrapping_add(1));
     rt.set_data(a, a_data.clone());
     rt.set_data(b, b_data.clone());
-    rt = cx.search(rt, CompileOptions::new(5));
+    rt = cx.search(rt, CompileOptions::default().search_graph_limit(5));
     rt.execute(&cx.dyn_map);
 
     let result = T::get_from_runtime(&rt, c.id);
@@ -741,7 +741,7 @@ pub fn test_mod(
     let b_data = random_f32_vec(b_elements, seed.wrapping_add(1), 0.1, 0.5);
     rt.set_data(a, a_data.clone());
     rt.set_data(b, b_data.clone());
-    rt = cx.search(rt, CompileOptions::new(5));
+    rt = cx.search(rt, CompileOptions::default().search_graph_limit(5));
     rt.execute(&cx.dyn_map);
 
     let result = rt.get_f32(c);

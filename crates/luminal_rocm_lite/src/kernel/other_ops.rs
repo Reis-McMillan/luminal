@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::{
     compile_module_image_for_current_device, rocm_dtype,
     kernel::KernelOp,
-    kernel::hlir::{dtype_includes, generate_dyn_dims_defines},
+    kernel::hlir::{dtype_includes, generate_dyn_dims_defines, SHFL_DOWN_COMPAT},
 };
 use rocmrc::hip::{HipFunction, HipModule, HipSlice, HipStream};
 use itertools::Itertools;
@@ -136,6 +136,7 @@ impl KernelOp for KernelMeanReduce {
 
         let kernel = format!(
             "{includes}
+{shfl_compat}
 {dyn_defines}
 extern \"C\" {{
     __global__ void reduce_mean_k({dtype} *out, const {dtype} *in{dyn_dims_param}) {{
@@ -152,7 +153,7 @@ extern \"C\" {{
             thread_sum += (float)in[in_start + i * iter_stride];
 
         for (int offset = 16; offset > 0; offset >>= 1)
-            thread_sum += __shfl_down_sync(0xffffffffffffffffULL, thread_sum, offset);
+            thread_sum += SHFL_DOWN(thread_sum, offset);
 
         __shared__ float warp_sums[{n_warps}];
         int lane = threadIdx.x & 31;
@@ -179,6 +180,7 @@ extern \"C\" {{
                 .to_kernel(),
             threads_per_block = threads_per_block,
             n_warps = n_warps,
+            shfl_compat = SHFL_DOWN_COMPAT,
         );
 
         let (module, func) = if let Some((module, func)) = compile_cache.get(&kernel) {
@@ -800,11 +802,12 @@ impl KernelOp for KernelBatchMatVec {
             .simplify()
             .to_kernel();
 
+        let shfl_compat = SHFL_DOWN_COMPAT;
         let kernel = format!(
             "
 #define WARP_SIZE 32
 #define THREADS_PER_BLOCK 256
-#define FULL_MASK 0xffffffffffffffffULL
+{shfl_compat}
 {dyn_defines}
 extern \"C\" {{
     __global__ void batch_matvec(float *out, const float *A, const float *B{dyn_dims_param}) {{
@@ -827,7 +830,7 @@ extern \"C\" {{
 
         #pragma unroll
         for (int s = WARP_SIZE / 2; s > 0; s /= 2) {{
-            partial += __shfl_down_sync(FULL_MASK, partial, s);
+            partial += SHFL_DOWN(partial, s);
         }}
 
         if (lane_id == 0) {{
@@ -841,7 +844,7 @@ extern \"C\" {{
 
             #pragma unroll
             for (int s = cnt / 2; s > 0; s /= 2) {{
-                block_sum += __shfl_down_sync(FULL_MASK, block_sum, s);
+                block_sum += SHFL_DOWN(block_sum, s);
             }}
 
             if (tid == 0) {{
@@ -1078,11 +1081,12 @@ impl KernelOp for KernelBatchMatMul {
             .simplify()
             .to_kernel();
 
+        let shfl_compat = SHFL_DOWN_COMPAT;
         let kernel = format!(
             "
 #define WARP_SIZE 32
 #define THREADS_PER_BLOCK 256
-#define FULL_MASK 0xffffffffffffffffULL
+{shfl_compat}
 {dyn_defines}
 extern \"C\" {{
     __global__ void batch_matmul(float *out, const float *A, const float *B{dyn_dims_param}) {{
@@ -1105,7 +1109,7 @@ extern \"C\" {{
 
         #pragma unroll
         for (int s = WARP_SIZE / 2; s > 0; s /= 2) {{
-            partial += __shfl_down_sync(FULL_MASK, partial, s);
+            partial += SHFL_DOWN(partial, s);
         }}
 
         if (lane_id == 0) {{
@@ -1119,7 +1123,7 @@ extern \"C\" {{
 
             #pragma unroll
             for (int s = cnt / 2; s > 0; s /= 2) {{
-                block_sum += __shfl_down_sync(FULL_MASK, block_sum, s);
+                block_sum += SHFL_DOWN(block_sum, s);
             }}
 
             if (tid == 0) {{

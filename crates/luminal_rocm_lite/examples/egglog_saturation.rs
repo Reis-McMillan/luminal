@@ -540,7 +540,7 @@ fn run(args: Args) {
     let (program, root) = hlir_to_egglog(&graph);
 
     let mut ops = match args.backend {
-        Backend::Native => <NativeRuntime as Runtime>::Ops::into_vec(),
+        Backend::Native => <ReferenceRuntime as Runtime>::Ops::into_vec(),
         Backend::Rocm => <RocmRuntime as Runtime>::Ops::into_vec(),
     };
     ops.extend(<HLIROps as IntoEgglogOp>::into_vec());

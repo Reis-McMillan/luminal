@@ -1121,7 +1121,6 @@ fn epilogue_uses_bias(epilogue: hipblasLtEpilogue_t) -> bool {
         epilogue,
         hipblasLtEpilogue_t::HIPBLASLT_EPILOGUE_BIAS
             | hipblasLtEpilogue_t::HIPBLASLT_EPILOGUE_RELU_BIAS
-            | hipblasLtEpilogue_t::HIPBLASLT_EPILOGUE_RELU_AUX_BIAS
             | hipblasLtEpilogue_t::HIPBLASLT_EPILOGUE_GELU_BIAS
             | hipblasLtEpilogue_t::HIPBLASLT_EPILOGUE_GELU_AUX_BIAS
     )

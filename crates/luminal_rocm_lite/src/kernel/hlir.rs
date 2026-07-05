@@ -47,6 +47,21 @@ pub fn dtype_includes(dtypes: &[DType]) -> String {
     s
 }
 
+/// Warp-shuffle compatibility shim.
+///
+/// hiprtc on ROCm < 7.0 (e.g. 6.3.x/6.4.x) does not declare the CUDA-style
+/// `__shfl_down_sync(mask, ...)` intrinsic, so kernels that call it fail to
+/// compile with "use of undeclared identifier '__shfl_down_sync'". Emit a
+/// `SHFL_DOWN(val, offset)` macro that maps to the mask-less AMD `__shfl_down`
+/// on HIP and to `__shfl_down_sync` elsewhere. Inject this into any kernel that
+/// performs a warp reduction.
+pub const SHFL_DOWN_COMPAT: &str = "\
+#ifdef __HIP_PLATFORM_AMD__
+#define SHFL_DOWN(val, offset) __shfl_down((val), (offset))
+#else
+#define SHFL_DOWN(val, offset) __shfl_down_sync(0xffffffffu, (val), (offset))
+#endif";
+
 pub type Ops = (
     KernelMod,
     KernelLessThan,
@@ -181,8 +196,8 @@ impl KernelOp for KernelMaxReduce {
             "{includes}
 #define WARP_SIZE 32
 #define THREADS_PER_BLOCK 256
-#define FULL_MASK 0xffffffffffffffffULL
 #define NEG_INF_F __int_as_float(0xff800000)
+{shfl_compat}
 {dyn_defines}
 extern \"C\" {{
     __global__ void reduce_max_k({dtype} *out, const {dtype} *in{dyn_dims_param}) {{
@@ -203,7 +218,7 @@ extern \"C\" {{
 
         #pragma unroll
         for (int s = WARP_SIZE / 2; s > 0; s /= 2) {{
-            max_value = fmaxf(max_value, __shfl_down_sync(FULL_MASK, max_value, s));
+            max_value = fmaxf(max_value, SHFL_DOWN(max_value, s));
         }}
 
         if (lane_id == 0) {{
@@ -217,7 +232,7 @@ extern \"C\" {{
 
             #pragma unroll
             for (int s = cnt / 2; s > 0; s /= 2) {{
-                block_max = fmaxf(block_max, __shfl_down_sync(FULL_MASK, block_max, s));
+                block_max = fmaxf(block_max, SHFL_DOWN(block_max, s));
             }}
 
             if (tid == 0) {{
@@ -231,6 +246,7 @@ extern \"C\" {{
             out_index = flatten_strides(&self.out_shape, &self.out_stride).to_kernel(),
             iters = self.iters.to_kernel(),
             iter_stride_of_i = iter_stride_of_i,
+            shfl_compat = SHFL_DOWN_COMPAT,
         );
 
         let (module, func) = if let Some((module, func)) = compile_cache.get(&kernel) {
@@ -407,7 +423,7 @@ impl KernelOp for KernelSumReduce {
             "{includes}
 #define WARP_SIZE 32
 #define THREADS_PER_BLOCK 256
-#define FULL_MASK 0xffffffffffffffffULL
+{shfl_compat}
 {dyn_defines}
 extern \"C\" {{
     __global__ void reduce_sum_k({dtype} *out, const {dtype} *in_data{dyn_dims_param}) {{
@@ -432,7 +448,7 @@ extern \"C\" {{
 
         #pragma unroll
         for (int s = WARP_SIZE / 2; s > 0; s /= 2) {{
-            partial += __shfl_down_sync(FULL_MASK, partial, s);
+            partial += SHFL_DOWN(partial, s);
         }}
 
         if (lane_id == 0) {{
@@ -446,7 +462,7 @@ extern \"C\" {{
 
             #pragma unroll
             for (int s = cnt / 2; s > 0; s /= 2) {{
-                block_sum += __shfl_down_sync(FULL_MASK, block_sum, s);
+                block_sum += SHFL_DOWN(block_sum, s);
             }}
 
             if (tid == 0) {{
@@ -462,6 +478,7 @@ extern \"C\" {{
             iters = self.iters.to_kernel(),
             load_value = load_value,
             zero = zero,
+            shfl_compat = SHFL_DOWN_COMPAT,
         );
 
         let (module, func) = if let Some((module, func)) = compile_cache.get(&kernel) {

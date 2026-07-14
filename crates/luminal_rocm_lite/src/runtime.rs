@@ -142,6 +142,13 @@ pub struct RocmRuntime {
     pub(crate) rocm_graph_timings: Vec<(RocmGraphTiming, Uuid)>,
     pub last_kernel_stats: Vec<KernelStats>,
     pub last_total_time_us: f64,
+    /// Total GPU kernel launches issued by the last `execute()` (fused HIP-graph
+    /// kernels expanded to their individual launches; each BLAS/attention op
+    /// counted as 1 — a lower bound, since a BLAS call may issue >1 GPU kernel).
+    pub last_kernel_launches: usize,
+    /// Analytical floating-point operations issued by the last `execute()`,
+    /// summed from each op's `flop_estimate`.
+    pub last_flops: u64,
     kernel_cache: FxHashMap<String, (Arc<HipModule>, HipFunction)>,
     /// When true, execute() skips input buffer consumption (used during search/profile)
     profiling: bool,
@@ -275,7 +282,11 @@ impl RocmRuntime {
         let mmap = unsafe { MmapOptions::new().map(&f).unwrap() };
         let st = SafeTensors::deserialize(&mmap).unwrap();
         for node in cx.graph.node_indices() {
-            if let Some(Input { label, .. }) = (*cx.graph[node]).as_any().downcast_ref::<Input>()
+            if let Some(Input {
+                label,
+                dtype: target_dtype,
+                ..
+            }) = (*cx.graph[node]).as_any().downcast_ref::<Input>()
                 && let Ok(tensor) = st.tensor(label)
             {
                 self.changed_hlir.insert(node);
@@ -284,6 +295,18 @@ impl RocmRuntime {
                         let bytes = tensor.data();
                         let f32s: &[f32] = bytemuck::cast_slice(bytes);
                         let dev = f32s.to_rocm_input(&self.hip_stream);
+                        self.hlir_buffers.insert(node, dev);
+                    }
+                    // The checkpoint is BF16 but the graph declares this tensor as
+                    // F32: convert, otherwise the raw BF16 bytes would be read as
+                    // F32 (garbage). A BF16 value is the top 16 bits of the F32.
+                    safetensors::Dtype::BF16 if matches!(target_dtype, DType::F32) => {
+                        let f32s: Vec<f32> = tensor
+                            .data()
+                            .chunks_exact(2)
+                            .map(|c| f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16))
+                            .collect();
+                        let dev = f32s.as_slice().to_rocm_input(&self.hip_stream);
                         self.hlir_buffers.insert(node, dev);
                     }
                     safetensors::Dtype::U8
@@ -745,7 +768,22 @@ impl RocmRuntime {
             .as_ref()
             .is_none_or(|arena| arena.len() < bucket.arena_bytes)
         {
-            bucket.arena = Some(stream.alloc_zeros(bucket.arena_bytes).unwrap());
+            let arena_bytes = bucket.arena_bytes;
+            let n_buffers = bucket.logical_buffer_offsets.len();
+            bucket.arena = Some(stream.alloc_zeros(arena_bytes).unwrap_or_else(|e| {
+                // Surface enough context to tell a genuine OOM (device nearly
+                // full) from a pathological buffer plan (absurd arena_bytes
+                // that HIP rejects outright while VRAM stays flat). `HipError`
+                // itself only carries the code/name, so report the requested
+                // size alongside the device's actual free/total.
+                let mem = stream.context().mem_get_info();
+                panic!(
+                    "intermediate arena alloc failed: requested {arena_bytes} bytes \
+                     ({:.3} GB) for {n_buffers} intermediate buffers; \
+                     device mem (free, total) = {mem:?}; hip error: {e:?}",
+                    arena_bytes as f64 / 1e9,
+                );
+            }));
         }
 
         let arena_ptr = bucket.arena.as_ref().unwrap().device_ptr(stream).0 as u64;
@@ -955,6 +993,48 @@ impl RocmRuntime {
             arena_end = arena_end.max(offset + allocation_bytes);
         }
         bucket.arena_bytes = arena_end;
+
+        // Pathological-plan diagnostics. A candidate genome can emit a kernel
+        // whose `output_bytes()` expression evaluates larger than the whole
+        // device (surfaces later as a spurious `hipErrorOutOfMemory` from the
+        // arena alloc while VRAM stays flat). Dump the worst offenders — node,
+        // evaluated bytes, and the *symbolic* size expression — plus the
+        // `dyn_dims` they were evaluated against, so we can tell a structurally
+        // huge expression (e.g. S*S*S) from a bad dynamic-dim substitution.
+        // Fires under the debug env var, or automatically past an impossible
+        // threshold so the offender is captured even on an un-instrumented run.
+        const IMPLAUSIBLE_ARENA: usize = 64 << 30; // 64 GiB
+        if std::env::var_os("LUMINAL_ROCM_MEMORY_DEBUG").is_some()
+            || bucket.arena_bytes > IMPLAUSIBLE_ARENA
+        {
+            let mut sized: Vec<(NodeIndex, usize)> = bucket
+                .logical_buffer_bytes
+                .iter()
+                .map(|(&n, &b)| (n, b))
+                .collect();
+            sized.sort_by_key(|&(_, b)| std::cmp::Reverse(b));
+            eprintln!(
+                "   ROCm plan arena_bytes={} ({:.2} GB), {} buffers, dyn_dims={:?}",
+                bucket.arena_bytes,
+                bucket.arena_bytes as f64 / 1e9,
+                sized.len(),
+                dyn_dims,
+            );
+            for (node, bytes) in sized.iter().take(8) {
+                let expr = bucket
+                    .buffer_specs
+                    .get(node)
+                    .map(|s| s.bytes.to_string())
+                    .unwrap_or_else(|| "<no spec>".to_string());
+                eprintln!(
+                    "     node {:?}: {} bytes ({:.2} GB), size expr = {}",
+                    node.index(),
+                    bytes,
+                    *bytes as f64 / 1e9,
+                    expr,
+                );
+            }
+        }
 
         if std::env::var_os("LUMINAL_ROCM_MEMORY_DEBUG").is_some() {
             eprintln!(
@@ -1200,6 +1280,8 @@ impl Runtime for RocmRuntime {
             rocm_graph_timings: vec![],
             last_kernel_stats: vec![],
             last_total_time_us: 0.0,
+            last_kernel_launches: 0,
+            last_flops: 0,
             kernel_cache: FxHashMap::default(),
             profiling: false,
             compiled_buckets: vec![CompiledBucket::new()],
@@ -1444,6 +1526,10 @@ impl Runtime for RocmRuntime {
         // Resolve external output pointer registrations (zero-copy output path)
         self.apply_output_ptr_registrations();
 
+        // Flush any pending GPU work before starting the clock so
+        // `last_total_time_us` brackets only this execute's GPU wall-time (the
+        // trailing synchronize() below closes the window).
+        self.hip_stream.synchronize().unwrap();
         let total_start = std::time::Instant::now();
         let bucket = &self.compiled_buckets[self.active_bucket];
 
@@ -1519,18 +1605,24 @@ impl Runtime for RocmRuntime {
         self.hip_stream.synchronize().unwrap();
         self.last_total_time_us = total_start.elapsed().as_secs_f64() * 1_000_000.0;
 
-        // Populate last_kernel_stats from HostOps that report stats
+        // Populate last_kernel_stats from HostOps that report stats, and tally
+        // end-to-end kernel launches + FLOPs from each op's analytical estimate.
         self.last_kernel_stats.clear();
+        self.last_kernel_launches = 0;
+        self.last_flops = 0;
         let bucket = &self.compiled_buckets[self.active_bucket];
         for exec_node in bucket.exec_graph.node_indices() {
             let exec_op = &bucket.exec_graph[exec_node];
+            let flops = exec_op.internal.flop_estimate(dyn_map);
+            self.last_flops += flops;
+            self.last_kernel_launches += exec_op.internal.kernel_launch_count(dyn_map);
             if let Some(name) = exec_op.internal.stats_name() {
                 self.last_kernel_stats.push(KernelStats {
                     name,
                     execution_time_us: 0.0,
                     bytes_loaded: 0,
                     bytes_stored: 0,
-                    flops: 0,
+                    flops: flops as usize,
                     bandwidth_gbps: 0.0,
                     tflops: 0.0,
                 });
@@ -2269,4 +2361,26 @@ fn intersects(a: &FixedBitSet, b: &FixedBitSet) -> bool {
     // Note: is_empty() checks if length is 0, not if there are no bits set
     // Use count_ones() to check if there are any set bits after intersection
     tmp.count_ones(..) > 0
+}
+
+#[cfg(test)]
+mod tests {
+    /// Regression for the VAE weight-load bug: a BF16 checkpoint value loaded
+    /// into an F32-declared tensor must be widened (top 16 bits of the F32),
+    /// not reinterpreted raw. Reading raw BF16 bytes as F32 garbles every VAE
+    /// weight (e.g. conv_out.weight std 0.03 -> 0.35), blowing up the latent.
+    #[test]
+    fn bf16_widens_to_f32() {
+        // (bf16 bits, exact f32 value) — bf16 is representable exactly in f32.
+        for (bits, want) in [
+            (0x3F80u16, 1.0f32),
+            (0xBF00, -0.5),
+            (0x4049, 3.140_625), // ~pi truncated to bf16
+            (0x0000, 0.0),
+            (0x3F00, 0.5),
+        ] {
+            let got = f32::from_bits((bits as u32) << 16);
+            assert_eq!(got, want, "bf16 0x{bits:04X} widened wrong");
+        }
+    }
 }

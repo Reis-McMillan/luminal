@@ -272,4 +272,16 @@ impl HostOp for RocBlasSgemm {
         // RocBlasSgemm is F32 only (Sgemm = Single precision)
         self.output_size() * 4
     }
+
+    fn flop_estimate(&self, dyn_map: &FxHashMap<char, usize>) -> u64 {
+        // Plain SGEMM (no bias): 2·m·n·k multiply-adds.
+        let m = self.m.exec(dyn_map).unwrap_or(0) as u64;
+        let n = self.n.exec(dyn_map).unwrap_or(0) as u64;
+        let k = self.k.exec(dyn_map).unwrap_or(0) as u64;
+        2 * m * n * k
+    }
+
+    fn stats_name(&self) -> Option<&'static str> {
+        Some("rocblas")
+    }
 }

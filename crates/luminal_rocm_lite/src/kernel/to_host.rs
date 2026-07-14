@@ -334,6 +334,21 @@ impl HostOp for RocmGraphOp {
     fn stats_name(&self) -> Option<&'static str> {
         Some("RocmGraph")
     }
+
+    fn flop_estimate(&self, dyn_map: &FxHashMap<char, usize>) -> u64 {
+        self.state
+            .borrow()
+            .kernels
+            .iter()
+            .map(|k| k.kernel_op.flops().exec(dyn_map).unwrap_or(0) as u64)
+            .sum()
+    }
+
+    fn kernel_launch_count(&self, _dyn_map: &FxHashMap<char, usize>) -> usize {
+        // `execute_internal` adds one HIP-graph kernel node per entry in
+        // `state.kernels` (no skips), so this is the exact launch count.
+        self.state.borrow().kernels.len()
+    }
 }
 
 impl RocmGraphOp {

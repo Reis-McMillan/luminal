@@ -1,5 +1,7 @@
 use luminal::{dtype::DType, graph::Graph, prelude::*};
 
+use crate::util::Materialize;
+
 // ── Qwen3ForCausalLM architecture constants for FLUX.2-Klein-9B ───────────────
 // Verified against black-forest-labs/FLUX.2-klein-9B `text_encoder/config.json`.
 pub const HIDDEN: usize = 4096;
@@ -111,9 +113,9 @@ fn causal_sdpa(
     // matmul fallback can handle those arbitrary strides correctly, but the
     // full model becomes too memory-heavy unless cuBLASLt sees contiguous
     // per-head matrices.
-    let q = q * 1.0_f32;
-    let k = k * 1.0_f32;
-    let v = v * 1.0_f32;
+    let q = q.materialize();
+    let k = k.materialize();
+    let v = v.materialize();
     // Q @ K^T: (heads, seq, head_dim) @ (heads, seq, head_dim)^T = (heads, seq, seq).
     let scores = q.matmul(k.transpose(1, 2)) * scale;
     // Causal mask: positions where k_pos > q_pos are masked.
@@ -141,7 +143,7 @@ fn causal_sdpa(
     let attn = weights.matmul(v);
     // `transpose(0, 1).merge_dims(1, 2)` produces a non-contiguous K stride;
     // materialize before the downstream o_proj matmul.
-    attn.transpose(0, 1).merge_dims(1, 2) * 1.0_f32 // (seq_q, n_heads*head_dim)
+    attn.transpose(0, 1).merge_dims(1, 2).materialize() // (seq_q, n_heads*head_dim)
 }
 
 // =============================================================================

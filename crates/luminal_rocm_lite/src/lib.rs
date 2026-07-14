@@ -297,6 +297,7 @@ pub fn rocm_bandwidth_gbps(ctx: &Arc<HipContext>) -> Option<usize> {
         n if n.contains("7900 XTX") => 960,
         n if n.contains("7600 XT") => 288,
         n if n.contains("R9600D") => 640,
+        n if n.contains("MI300X") || n.contains("gfx942") => 5300, // HBM3
         _ => return None,
     })
 }
@@ -309,6 +310,17 @@ pub fn rocm_compute_f32_tflops(ctx: &Arc<HipContext>) -> Option<usize> {
         n if n.contains("7900 XTX") => 61,
         n if n.contains("7600 XT") => 23,
         n if n.contains("R9600D") => 25,
+        n if n.contains("MI300X") || n.contains("gfx942") => 163, // FP32 matrix
+        _ => return None,
+    })
+}
+
+/// Returns the BF16 matrix-core (dense) throughput in TFLOPs. This is the right
+/// MFU denominator for BF16 matmul workloads. Same unknown-device semantics.
+pub fn rocm_compute_bf16_tflops(ctx: &Arc<HipContext>) -> Option<usize> {
+    let name = ctx.name().ok()?;
+    Some(match name.as_str() {
+        n if n.contains("MI300X") || n.contains("gfx942") => 1307,
         _ => return None,
     })
 }

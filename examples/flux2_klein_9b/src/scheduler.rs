@@ -36,15 +36,11 @@ impl Default for SchedulerConfig {
     }
 }
 
-/// Linear interpolation of the shift parameter over the configured image-sequence range.
-/// Matches the `mu` computation in `diffusers.FluxPipeline.calculate_shift`.
 pub fn compute_mu(cfg: &SchedulerConfig, image_seq_len: usize) -> f32 {
     let m = (cfg.max_shift - cfg.base_shift) / (cfg.max_image_seq_len - cfg.base_image_seq_len);
     m * (image_seq_len as f32 - cfg.base_image_seq_len) + cfg.base_shift
 }
 
-/// Build the schedule of sigmas (length `num_inference_steps + 1`, ending in 0.0)
-/// and timesteps (length `num_inference_steps`) for one inference run.
 pub fn make_schedule(
     cfg: &SchedulerConfig,
     num_inference_steps: usize,

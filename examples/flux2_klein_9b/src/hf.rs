@@ -6,7 +6,7 @@
 //! shards as-is and load them directly via `runtime.load_safetensors`, which
 //! supports BF16 in luminal_rocm_lite.
 
-use hf_hub::api::sync::Api;
+use hf_hub::api::sync::ApiBuilder;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -19,7 +19,17 @@ struct SafetensorsIndex {
 }
 
 fn api() -> Result<hf_hub::api::sync::ApiRepo, Box<dyn std::error::Error>> {
-    let api = Api::new()?;
+    // `ApiBuilder::new()` only picks up a token from the cache file
+    // (`~/.cache/huggingface/token`), never from `HF_TOKEN`. FLUX.2-klein-9B is
+    // gated, so read the token from the env var when present and fall back to
+    // whatever the cache already holds otherwise.
+    let mut builder = ApiBuilder::new();
+    if let Ok(token) = std::env::var("HF_TOKEN") {
+        if !token.trim().is_empty() {
+            builder = builder.with_token(Some(token));
+        }
+    }
+    let api = builder.build()?;
     Ok(api.model(REPO_ID.to_string()))
 }
 

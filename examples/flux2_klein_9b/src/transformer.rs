@@ -1,5 +1,7 @@
 use luminal::{dtype::DType, graph::Graph, prelude::*};
 
+use crate::util::Materialize;
+
 pub fn num_layers() -> usize {
     std::env::var("FLUX2_NUM_LAYERS")
         .ok()
@@ -98,9 +100,9 @@ fn sdpa(q: GraphTensor, k: GraphTensor, v: GraphTensor) -> GraphTensor {
     // can represent the leading dimensions, but the current rewrite rules do
     // not yet match the interleaved per-head layout, so omitting these copies
     // falls back to a much larger generic plan in the full Flux2 graph.
-    let q = q * 1.0_f32;
-    let k = k * 1.0_f32;
-    let v = v * 1.0_f32;
+    let q = q.materialize();
+    let k = k.materialize();
+    let v = v.materialize();
     let scores = q.matmul(k.transpose(1, 2)) * scale; // (H, S, S)
     let attn_w = scores.softmax(2);
     let attn = attn_w.matmul(v); // (H, S, D)
@@ -157,10 +159,6 @@ fn timesteps_proj(timestep: GraphTensor, num_channels: usize) -> GraphTensor {
     arg.cos().concat_along(arg.sin(), 0)
 }
 
-// =============================================================================
-// Modulation
-// =============================================================================
-
 /// Modulation linear: `out = linear(silu(temb))`. Output dim = `dim * 3 * sets`.
 fn modulation(temb: GraphTensor, weight: GraphTensor) -> GraphTensor {
     let act = temb.silu();
@@ -197,10 +195,6 @@ fn ada_modulate(x: GraphTensor, scale: GraphTensor, shift: GraphTensor) -> Graph
     x * (scale_b + 1.0_f32) + shift_b
 }
 
-// =============================================================================
-// FeedForward (used by double-stream blocks)
-// =============================================================================
-
 struct FeedForward {
     linear_in: GraphTensor,  // (mlp_hidden*2, dim)
     linear_out: GraphTensor, // (dim, mlp_hidden)
@@ -226,10 +220,6 @@ impl FeedForward {
         linear_no_bias(h, self.linear_out)
     }
 }
-
-// =============================================================================
-// Double-stream attention (img + txt joint attention)
-// =============================================================================
 
 struct DoubleStreamAttn {
     to_q: GraphTensor,
@@ -336,7 +326,7 @@ impl DoubleStreamAttn {
         // stride for the next matmul (the o_proj path). Without
         // `* 1.0` the cublaslt 2D rule can't match and the broadcast
         // Mul intermediate is ~36 GB BF16 at flux2 dimensions.
-        let attn = attn.merge_dims(1, 2) * 1.0_f32; // (S_total, HIDDEN)
+        let attn = attn.merge_dims(1, 2).materialize(); // (S_total, HIDDEN)
 
         // Split back into txt + img streams.
         let attn_txt = attn.slice((..s_txt, ..));
@@ -419,7 +409,7 @@ impl SingleStreamAttn {
         let v = v.transpose(0, 1);
         // `merge_dims(1, 2)` on (S, H, D) produces non-contiguous K stride;
         // materialize before the downstream `to_out` matmul.
-        let attn = sdpa(q, k, v).merge_dims(1, 2) * 1.0_f32; // (S, HIDDEN)
+        let attn = sdpa(q, k, v).merge_dims(1, 2).materialize(); // (S, HIDDEN)
 
         let mlp = swiglu(mlp_in); // (S, MLP_HIDDEN)
 
@@ -536,42 +526,49 @@ impl SingleStreamBlock {
 // Position-id construction + Flux2PosEmbed (RoPE freqs)
 // =============================================================================
 
-/// Build the 4D position-id tensor for the concatenated (txt, img) sequence,
-/// matching `diffusers.pipelines.flux2.pipeline_flux2._prepare_text_ids` and
-/// `_prepare_latent_ids` exactly.
+/// Time-coordinate offset for reference-image tokens, so the model can tell
+/// them apart from the generated tokens (which sit at T=0). Matches
+/// `pipeline_flux2_klein._prepare_image_ids`'s `scale=10` for the first (and
+/// here only) reference image.
+pub const REF_T_SCALE: f32 = 10.0;
+
+/// Build the 4D position-id tensor for the full transformer sequence,
+/// `text ++ generated-image ++ reference-image`, matching
+/// `pipeline_flux2_klein._prepare_text_ids`, `_prepare_latent_ids` and
+/// `_prepare_image_ids`.
 ///
 /// The 4 axes are interpreted as **(time, h, w, layer/sequence)**.
 ///
-///   * `txt_ids`: shape `(S_txt, 4)`. Row `l` is `(0, 0, 0, l)` — text tokens
-///     vary only along the last axis (the "layer" / sequence index).
-///   * `img_ids`: shape `(S_img, 4)` where `S_img = h_pack * w_pack`. Row at
-///     `(hi, wi)` (cartesian product order) is `(0, hi, wi, 0)` — image
-///     tokens vary along the spatial axes 1 and 2.
+///   * text (`S_txt` rows): `(0, 0, 0, l)` — vary only along the layer axis.
+///   * generated image (`S_img = h_pack·w_pack` rows): `(0, hi, wi, 0)` — the
+///     tokens being denoised, at time T=0.
+///   * reference image (`S_img` rows): `(REF_T_SCALE, hi, wi, 0)` — the clean
+///     encoded input image, appended as context at time T=10.
 ///
-/// `h_pack` and `w_pack` are the **post-pack** spatial dims that the
-/// transformer sees, i.e. `H/16` and `W/16` for an HxW pixel image. (The VAE
-/// 8× downsample plus the channel-pack 2× spatial fold give 16× total.)
-pub fn build_position_ids(s_txt: usize, h_pack: usize, w_pack: usize) -> (Vec<f32>, Vec<f32>) {
-    let mut txt_ids = Vec::with_capacity(s_txt * 4);
+/// `h_pack`/`w_pack` are the post-pack dims the transformer sees (`H/16`,
+/// `W/16`). The reference image is assumed to share the generated resolution.
+pub fn build_position_ids(s_txt: usize, h_pack: usize, w_pack: usize) -> Vec<f32> {
+    let mut ids = Vec::with_capacity((s_txt + 2 * h_pack * w_pack) * 4);
     for l in 0..s_txt {
-        txt_ids.extend_from_slice(&[0.0, 0.0, 0.0, l as f32]);
+        ids.extend_from_slice(&[0.0, 0.0, 0.0, l as f32]);
     }
-    let mut img_ids = Vec::with_capacity(h_pack * w_pack * 4);
-    for hi in 0..h_pack {
-        for wi in 0..w_pack {
-            img_ids.extend_from_slice(&[0.0, hi as f32, wi as f32, 0.0]);
+    for t in [0.0_f32, REF_T_SCALE] {
+        for hi in 0..h_pack {
+            for wi in 0..w_pack {
+                ids.extend_from_slice(&[t, hi as f32, wi as f32, 0.0]);
+            }
         }
     }
-    (txt_ids, img_ids)
+    ids
 }
 
-/// Pre-compute `(cos, sin)` flat tables for the concatenated `(txt, img)`
-/// position grid. Each is `S × HEAD_DIM` row-major. This mirrors
+/// Pre-compute `(cos, sin)` flat tables for the `text ++ gen ++ ref` position
+/// grid. Each is `(S_txt + 2·S_img) × HEAD_DIM` row-major. Mirrors
 /// `Flux2PosEmbed.forward` (calls `get_1d_rotary_pos_embed` per axis with
 /// `repeat_interleave_real=True`, then concatenates along the last dim).
 pub fn build_rope_tables(s_txt: usize, h_pack: usize, w_pack: usize) -> (Vec<f32>, Vec<f32>) {
-    let (txt_ids, img_ids) = build_position_ids(s_txt, h_pack, w_pack);
-    let s_total = s_txt + h_pack * w_pack;
+    let ids = build_position_ids(s_txt, h_pack, w_pack);
+    let s_total = s_txt + 2 * h_pack * w_pack;
     let head_dim = HEAD_DIM;
     debug_assert_eq!(ROPE_AXES.iter().sum::<usize>(), head_dim);
 
@@ -602,13 +599,8 @@ pub fn build_rope_tables(s_txt: usize, h_pack: usize, w_pack: usize) -> (Vec<f32
         (row_cos, row_sin)
     };
 
-    for r in 0..s_txt {
-        let (c, s) = row(&txt_ids[r * 4..(r + 1) * 4]);
-        cos_table.extend(c);
-        sin_table.extend(s);
-    }
-    for r in 0..h_pack * w_pack {
-        let (c, s) = row(&img_ids[r * 4..(r + 1) * 4]);
+    for r in 0..s_total {
+        let (c, s) = row(&ids[r * 4..(r + 1) * 4]);
         cos_table.extend(c);
         sin_table.extend(s);
     }

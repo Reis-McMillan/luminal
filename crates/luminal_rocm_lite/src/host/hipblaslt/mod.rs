@@ -1342,11 +1342,41 @@ impl HostOp for HipblasLt {
     fn output_bytes(&self) -> Expression {
         (self.output_size() * self.d_dtype.bits()).ceil_div(8)
     }
+
+    fn flop_estimate(&self, dyn_map: &FxHashMap<char, usize>) -> u64 {
+        // Batched GEMM: 2·batch·m·n·k. (Bias/scale epilogues add a lower-order
+        // batch·m·n term that we omit.) `z→1` mirrors the execute() resolve.
+        let resolve = |e: &Expression| -> Expression { e.substitute('z', Expression::from(1)) };
+        let m = resolve(&self.m).exec(dyn_map).unwrap_or(0) as u64;
+        let n = resolve(&self.n).exec(dyn_map).unwrap_or(0) as u64;
+        let k = resolve(&self.k).exec(dyn_map).unwrap_or(0) as u64;
+        let batch = resolve(&self.batch_count).exec(dyn_map).unwrap_or(1) as u64;
+        2 * batch * m * n * k
+    }
+
+    fn stats_name(&self) -> Option<&'static str> {
+        Some("hipblaslt")
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hipblaslt_flop_estimate_is_2_batch_mnk() {
+        let op = HipblasLt {
+            m: 4.into(),
+            n: 5.into(),
+            k: 6.into(),
+            batch_count: 2.into(),
+            ..Default::default()
+        };
+        let dyn_map = FxHashMap::default();
+        // 2 · batch · m · n · k = 2 · 2 · 4 · 5 · 6 = 480.
+        assert_eq!(op.flop_estimate(&dyn_map), 480);
+        assert_eq!(op.kernel_launch_count(&dyn_map), 1);
+    }
 
     #[test]
     fn lt_scalar_packs_f32_scale_values() {

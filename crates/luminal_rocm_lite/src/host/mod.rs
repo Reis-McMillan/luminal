@@ -179,4 +179,21 @@ pub trait HostOp: Debug + as_any::AsAny + EgglogOp {
     fn stats_name(&self) -> Option<&'static str> {
         None
     }
+
+    /// Estimated floating-point operations this op issues to the GPU for the
+    /// given dynamic-dim binding. Default 0 for ops that do no arithmetic
+    /// (copies, reshapes). Matmul/kernel ops override with their analytical
+    /// cost (e.g. `2·m·n·k`).
+    fn flop_estimate(&self, _dyn_map: &FxHashMap<char, usize>) -> u64 {
+        0
+    }
+
+    /// Number of distinct GPU kernels this op launches. Default 1 (a single
+    /// BLAS/attention dispatch). `RocmGraphOp` overrides with the number of
+    /// fused kernels in its HIP graph. Note: a BLAS call may issue more than
+    /// one GPU kernel internally, which is invisible here — so this is a lower
+    /// bound for BLAS-heavy graphs.
+    fn kernel_launch_count(&self, _dyn_map: &FxHashMap<char, usize>) -> usize {
+        1
+    }
 }

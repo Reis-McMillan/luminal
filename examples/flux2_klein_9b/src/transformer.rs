@@ -547,12 +547,24 @@ pub const REF_T_SCALE: f32 = 10.0;
 ///
 /// `h_pack`/`w_pack` are the post-pack dims the transformer sees (`H/16`,
 /// `W/16`). The reference image is assumed to share the generated resolution.
-pub fn build_position_ids(s_txt: usize, h_pack: usize, w_pack: usize) -> Vec<f32> {
-    let mut ids = Vec::with_capacity((s_txt + 2 * h_pack * w_pack) * 4);
+pub fn build_position_ids(
+    s_txt: usize,
+    h_pack: usize,
+    w_pack: usize,
+    with_reference: bool,
+) -> Vec<f32> {
+    let img_blocks = if with_reference { 2 } else { 1 };
+    let mut ids = Vec::with_capacity((s_txt + img_blocks * h_pack * w_pack) * 4);
     for l in 0..s_txt {
         ids.extend_from_slice(&[0.0, 0.0, 0.0, l as f32]);
     }
-    for t in [0.0_f32, REF_T_SCALE] {
+    // Generated tokens at time T=0; reference tokens (edit mode only) at T=10.
+    let times: &[f32] = if with_reference {
+        &[0.0, REF_T_SCALE]
+    } else {
+        &[0.0]
+    };
+    for &t in times {
         for hi in 0..h_pack {
             for wi in 0..w_pack {
                 ids.extend_from_slice(&[t, hi as f32, wi as f32, 0.0]);
@@ -566,9 +578,15 @@ pub fn build_position_ids(s_txt: usize, h_pack: usize, w_pack: usize) -> Vec<f32
 /// grid. Each is `(S_txt + 2·S_img) × HEAD_DIM` row-major. Mirrors
 /// `Flux2PosEmbed.forward` (calls `get_1d_rotary_pos_embed` per axis with
 /// `repeat_interleave_real=True`, then concatenates along the last dim).
-pub fn build_rope_tables(s_txt: usize, h_pack: usize, w_pack: usize) -> (Vec<f32>, Vec<f32>) {
-    let ids = build_position_ids(s_txt, h_pack, w_pack);
-    let s_total = s_txt + 2 * h_pack * w_pack;
+pub fn build_rope_tables(
+    s_txt: usize,
+    h_pack: usize,
+    w_pack: usize,
+    with_reference: bool,
+) -> (Vec<f32>, Vec<f32>) {
+    let ids = build_position_ids(s_txt, h_pack, w_pack, with_reference);
+    let img_blocks = if with_reference { 2 } else { 1 };
+    let s_total = s_txt + img_blocks * h_pack * w_pack;
     let head_dim = HEAD_DIM;
     debug_assert_eq!(ROPE_AXES.iter().sum::<usize>(), head_dim);
 

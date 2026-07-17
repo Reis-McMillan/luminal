@@ -20,7 +20,7 @@ use luminal_rocm_lite::{rocmrc::HipContext, runtime::RocmRuntime};
 use rand::{Rng, SeedableRng, rngs::StdRng};
 use rand_distr::StandardNormal;
 use io::{load_png, save_png};
-use metrics::{StageDims, report_metrics};
+use metrics::{Sample, measure, report_metrics};
 use scheduler::{SchedulerConfig, compute_mu, euler_step, make_schedule};
 use tokenizers::Tokenizer;
 use transformer::{HEAD_DIM, IN_CHANNELS};
@@ -222,9 +222,12 @@ impl DitStage {
         weights: &[std::path::PathBuf],
         s_img: usize,
         s_txt: usize,
+        with_reference: bool,
         search_iters: usize,
     ) -> Self {
-        let s_img_tokens = 2 * s_img; // generated ++ reference
+        // Edit mode feeds [generated ++ reference] image tokens; text-to-image
+        // feeds just the generated tokens.
+        let s_img_tokens = if with_reference { 2 * s_img } else { s_img };
         let s_total = s_txt + s_img_tokens;
         let mut cx = Graph::default();
         let latent = cx.named_tensor("__latent", (s_img_tokens, IN_CHANNELS));
@@ -257,32 +260,6 @@ impl DitStage {
         );
         Self { cx, rt, latent, text, cos, sin, timestep, velocity }
     }
-}
-
-/// One DiT pass: build the `[generated ++ reference]` image-token input, set the
-/// text features / latent / timestep, execute, and return the generated tokens'
-/// velocity.
-#[allow(clippy::too_many_arguments)]
-fn dit_velocity(
-    rt: &mut RocmRuntime,
-    cx: &Graph,
-    in_text: GraphTensor,
-    in_latent: GraphTensor,
-    in_ts: GraphTensor,
-    out_v: GraphTensor,
-    reference: &[f32],
-    text: &[f32],
-    gen_latent: &[f32],
-    t: f32,
-) -> Vec<f32> {
-    let mut model_input = Vec::with_capacity(gen_latent.len() + reference.len());
-    model_input.extend_from_slice(gen_latent);
-    model_input.extend_from_slice(reference);
-    rt.set_data(in_text, text.to_vec());
-    rt.set_data(in_latent, model_input);
-    rt.set_data(in_ts, vec![t]);
-    rt.execute(&cx.dyn_map);
-    rt.get_f32(out_v)
 }
 
 pub struct DecodeStage {
@@ -322,13 +299,16 @@ impl DecodeStage {
 
 #[derive(Parser, Debug)]
 struct Args {
-    #[arg(default_value = "examples/images/input1.png")]
-    input: String,
-
-    #[arg(default_value = "")]
+    /// Text prompt.
     prompt: String,
 
-    #[arg(default_value = "examples/images/output.png")]
+    /// Input image for image-to-image / edit mode. Omit for text-to-image
+    /// (generates a fresh 1024×1024 image from the prompt alone).
+    #[arg(short = 'i', long)]
+    image: Option<String>,
+
+    /// Output PNG path.
+    #[arg(short = 'o', long, default_value = "out.png")]
     output: String,
 
     #[arg(short = 'n', long, default_value_t = 5)]
@@ -352,8 +332,8 @@ struct Args {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let Args {
-        input,
         prompt,
+        image,
         output,
         search_iters,
         text_length,
@@ -363,10 +343,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         repeat
     } = Args::parse();
 
-    println!("Input image: {input}");
+    // Edit / image-to-image when an input image is given; otherwise text-to-image
+    // at a fixed 1024×1024. `image_data` holds the loaded pixels (edit mode only).
+    let with_reference = image.is_some();
+    let (image_data, width, height) = match &image {
+        Some(path) => {
+            println!("Mode: image-to-image");
+            println!("Input image: {path}");
+            let (px, w, h) = load_png(path)?;
+            (px, w, h)
+        }
+        None => {
+            println!("Mode: text-to-image (1024×1024)");
+            (Vec::new(), 1024, 1024)
+        }
+    };
     println!("Prompt: {prompt}");
-
-    let (image, width, height) = load_png(&input)?;
     assert!(
         width.is_multiple_of(16) && height.is_multiple_of(16),
         "image dims must be multiples of 16 (got {width}x{height})",
@@ -391,14 +383,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut text_stage = TextStage::build(&ctx, &te_paths, s_txt, search_iters);
     println!("  done in {:.1}s", t0.elapsed().as_secs_f64());
 
-    println!("[3/6] Compiling VAE encode ({width}x{height})...");
-    let t0 = Instant::now();
-    let mut encode_stage = EncodeStage::build(&ctx, &vae_path, height, width, search_iters);
-    println!("  done in {:.1}s", t0.elapsed().as_secs_f64());
+    // VAE-encode stage only exists in edit mode (produces the reference latent).
+    let mut encode_stage = if with_reference {
+        println!("[3/6] Compiling VAE encode ({width}x{height})...");
+        let t0 = Instant::now();
+        let s = EncodeStage::build(&ctx, &vae_path, height, width, search_iters);
+        println!("  done in {:.1}s", t0.elapsed().as_secs_f64());
+        Some(s)
+    } else {
+        None
+    };
 
     println!("[4/6] Compiling diffusion step (s_img={s_img}, s_txt={s_txt})...");
     let t0 = Instant::now();
-    let mut dit_stage = DitStage::build(&ctx, &tx_paths, s_img, s_txt, search_iters);
+    let mut dit_stage = DitStage::build(&ctx, &tx_paths, s_img, s_txt, with_reference, search_iters);
     println!("  done in {:.1}s", t0.elapsed().as_secs_f64());
 
     println!("[5/6] Compiling VAE decode...");
@@ -409,84 +407,94 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("[6/6] Running pipeline...");
     let run_start = Instant::now();
 
-    let mut encode_text = |text: &str| -> Result<Vec<f32>, Box<dyn std::error::Error>> {
-        let (ids, real_len) = tokenize_prompt(&tokenizer, text, s_txt)?;
-        let mask: Vec<f32> = (0..s_txt)
-            .map(|i| if i < real_len { 1.0 } else { 0.0 })
-            .collect();
-        text_stage.rt.set_data(text_stage.ids, ids);
-        text_stage
-            .rt
-            .set_data(text_stage.pos, (0..s_txt as i32).collect::<Vec<_>>());
-        text_stage.rt.set_data(text_stage.mask, mask);
-        text_stage.rt.execute(&text_stage.cx.dyn_map);
-        Ok(text_stage.rt.get_f32(text_stage.out))
-    };
-    let t_cold = Instant::now();
-    let text_features = encode_text(&prompt)?;
-    let cold_text_ms = t_cold.elapsed().as_secs_f64() * 1e3;
-    let neg_text_features = encode_text("")?;
+    let (cond_ids, cond_len) = tokenize_prompt(&tokenizer, &prompt, s_txt)?;
+    let cond_mask: Vec<f32> = (0..s_txt).map(|i| if i < cond_len { 1.0 } else { 0.0 }).collect();
+    let (neg_ids, neg_len) = tokenize_prompt(&tokenizer, "", s_txt)?;
+    let neg_mask: Vec<f32> = (0..s_txt).map(|i| if i < neg_len { 1.0 } else { 0.0 }).collect();
+    let pos_ids: Vec<i32> = (0..s_txt as i32).collect();
 
-    encode_stage.rt.set_data(encode_stage.image, image);
-    let t_cold = Instant::now();
-    encode_stage.rt.execute(&encode_stage.cx.dyn_map);
-    let cold_enc_ms = t_cold.elapsed().as_secs_f64() * 1e3;
-    let reference = encode_stage.rt.get_f32(encode_stage.packed);
-
-    // Klein starts from pure noise and runs the full sigma schedule (1 → 0).
     let steps = 4;
     let cfg = SchedulerConfig::default();
     let mu = compute_mu(&cfg, s_img);
     let (sigmas, timesteps_raw) = make_schedule(&cfg, steps, mu);
-    // The transformer's time embedding expects a 0..1 scalar (it multiplies by
-    // 1000 internally), so pre-divide the scheduler's 0..1000 timesteps.
     let timesteps: Vec<f32> = timesteps_raw.iter().map(|t| t / 1000.0).collect();
     let mut rng = StdRng::seed_from_u64(random_seed as u64);
     let mut latent: Vec<f32> = (0..s_img * IN_CHANNELS)
         .map(|_| rng.sample::<f32, _>(StandardNormal))
         .collect();
 
-    let (cos, sin) = transformer::build_rope_tables(s_txt, h_pack, w_pack);
+    let mut run_text = |ids: &[i32], mask: &[f32]| -> (Vec<f32>, Sample) {
+        text_stage.rt.set_data(text_stage.ids, ids.to_vec());
+        text_stage.rt.set_data(text_stage.pos, pos_ids.clone());
+        text_stage.rt.set_data(text_stage.mask, mask.to_vec());
+        text_stage.rt.execute(&text_stage.cx.dyn_map);
+        let out = text_stage.rt.get_f32(text_stage.out);
+        let rt = &text_stage.rt;
+        (out, (rt.last_total_time_us, rt.last_kernel_launches, rt.last_flops))
+    };
+    // Only reachable in edit mode (encode_stage is Some).
+    let mut run_encode = || -> (Vec<f32>, Sample) {
+        let es = encode_stage.as_mut().expect("encode stage exists in edit mode");
+        es.rt.set_data(es.image, image_data.clone());
+        es.rt.execute(&es.cx.dyn_map);
+        let out = es.rt.get_f32(es.packed);
+        let rt = &es.rt;
+        (out, (rt.last_total_time_us, rt.last_kernel_launches, rt.last_flops))
+    };
+
+    // 1. Text-encode: conditional prompt + empty negative (for CFG).
+    let t_cold = Instant::now();
+    let (text_features, _) = run_text(&cond_ids, &cond_mask);
+    let cold_text_ms = t_cold.elapsed().as_secs_f64() * 1e3;
+    let (neg_text_features, _) = run_text(&neg_ids, &neg_mask);
+
+    // 2. VAE-encode the input image → reference tokens (edit mode only). In
+    //    text-to-image `reference` is empty, so the DiT sees just the generated
+    //    tokens.
+    let mut cold_enc_ms = 0.0_f64;
+    let reference: Vec<f32> = if with_reference {
+        let t_cold = Instant::now();
+        let (r, _) = run_encode();
+        cold_enc_ms = t_cold.elapsed().as_secs_f64() * 1e3;
+        r
+    } else {
+        Vec::new()
+    };
+
+    // RoPE tables cover text ++ generated (++ reference in edit mode). Constant
+    // across steps/passes → set once (persisted).
+    let (cos, sin) = transformer::build_rope_tables(s_txt, h_pack, w_pack, with_reference);
     dit_stage.rt.set_data(dit_stage.cos, cos);
     dit_stage.rt.set_data(dit_stage.sin, sin);
 
-    let (in_text, in_latent, in_ts, out_v) = (
-        dit_stage.text,
-        dit_stage.latent,
-        dit_stage.timestep,
-        dit_stage.velocity,
-    );
+    let mut run_dit = |text: &[f32], gen_latent: &[f32], t: f32| -> (Vec<f32>, Sample) {
+        let mut model_input = Vec::with_capacity(gen_latent.len() + reference.len());
+        model_input.extend_from_slice(gen_latent);
+        model_input.extend_from_slice(&reference);
+        dit_stage.rt.set_data(dit_stage.text, text.to_vec());
+        dit_stage.rt.set_data(dit_stage.latent, model_input);
+        dit_stage.rt.set_data(dit_stage.timestep, vec![t]);
+        dit_stage.rt.execute(&dit_stage.cx.dyn_map);
+        let v = dit_stage.rt.get_f32(dit_stage.velocity);
+        let rt = &dit_stage.rt;
+        (v, (rt.last_total_time_us, rt.last_kernel_launches, rt.last_flops))
+    };
+    let mut run_decode = |packed: &[f32]| -> (Vec<f32>, Sample) {
+        decode_stage.rt.set_data(decode_stage.packed, packed.to_vec());
+        decode_stage.rt.execute(&decode_stage.cx.dyn_map);
+        let out = decode_stage.rt.get_f32(decode_stage.out);
+        let rt = &decode_stage.rt;
+        (out, (rt.last_total_time_us, rt.last_kernel_launches, rt.last_flops))
+    };
 
     let mut cold_dit_ms = 0.0_f64;
     for i in 0..steps {
         let t_cold = Instant::now();
-        let v_cond = dit_velocity(
-            &mut dit_stage.rt,
-            &dit_stage.cx,
-            in_text,
-            in_latent,
-            in_ts,
-            out_v,
-            &reference,
-            &text_features,
-            &latent,
-            timesteps[i],
-        );
+        let (v_cond, _) = run_dit(&text_features, &latent, timesteps[i]);
         if i == 0 {
             cold_dit_ms = t_cold.elapsed().as_secs_f64() * 1e3;
         }
-        let v_uncond = dit_velocity(
-            &mut dit_stage.rt,
-            &dit_stage.cx,
-            in_text,
-            in_latent,
-            in_ts,
-            out_v,
-            &reference,
-            &neg_text_features,
-            &latent,
-            timesteps[i],
-        );
+        let (v_uncond, _) = run_dit(&neg_text_features, &latent, timesteps[i]);
         let velocity: Vec<f32> = v_uncond
             .iter()
             .zip(&v_cond)
@@ -501,36 +509,47 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    decode_stage.rt.set_data(decode_stage.packed, latent);
     let t_cold = Instant::now();
-    decode_stage.rt.execute(&decode_stage.cx.dyn_map);
+    let (img, _) = run_decode(&latent);
     let cold_dec_ms = t_cold.elapsed().as_secs_f64() * 1e3;
-    let img = decode_stage.rt.get_f32(decode_stage.out);
-
     save_png(&output, &img, width, height)?;
     println!(
-        "  {input} + \"{prompt}\" → {output} (run {:.1}s)",
+        "  \"{prompt}\" → {output} (run {:.1}s)",
         run_start.elapsed().as_secs_f64(),
     );
 
-    let dims = StageDims {
-        s_txt,
-        s_img,
-        width,
-        height,
+    // ── Steady-state measurement: re-run each stage warmup+repeats times ──────
+    let s_text = measure(warmup, repeat, || run_text(&cond_ids, &cond_mask));
+    let s_enc = if with_reference {
+        Some(measure(warmup, repeat, || run_encode()))
+    } else {
+        None
     };
-    report_metrics(
-        &ctx,
-        &mut text_stage,
-        &mut encode_stage,
-        &mut dit_stage,
-        &mut decode_stage,
-        steps,
-        dims,
-        [cold_text_ms, cold_enc_ms, cold_dit_ms, cold_dec_ms],
-        warmup,
-        repeat,
-    );
+    let s_dit = measure(warmup, repeat, || run_dit(&text_features, &latent, timesteps[0]));
+    let s_dec = measure(warmup, repeat, || run_decode(&latent));
+
+    // DiT compute-by-op-type from the last DiT execute's kernel stats.
+    let mut by_type: std::collections::BTreeMap<&'static str, (usize, u64)> =
+        std::collections::BTreeMap::new();
+    for s in &dit_stage.rt.last_kernel_stats {
+        let e = by_type.entry(s.name).or_insert((0, 0));
+        e.0 += 1;
+        e.1 += s.flops as u64;
+    }
+    let dit_by_type: Vec<(&'static str, usize, u64)> =
+        by_type.into_iter().map(|(n, (c, f))| (n, c, f)).collect();
+
+    // (name, per-pass sample, passes/image, cold-start wall ms). VAE-encode only
+    // appears in edit mode.
+    let mut rows: Vec<(&'static str, Sample, usize, f64)> = Vec::new();
+    rows.push(("text-encode", s_text, 2, cold_text_ms));
+    if let Some(s_enc) = s_enc {
+        rows.push(("vae-encode", s_enc, 1, cold_enc_ms));
+    }
+    rows.push(("DiT", s_dit, 2 * steps, cold_dit_ms));
+    rows.push(("vae-decode", s_dec, 1, cold_dec_ms));
+
+    report_metrics(&ctx, warmup, repeat, &rows, dit_by_type);
     Ok(())
 }
 

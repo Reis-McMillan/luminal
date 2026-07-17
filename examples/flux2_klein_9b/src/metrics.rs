@@ -1,100 +1,55 @@
 use std::sync::Arc;
 
-use luminal::prelude::*;
-use luminal_rocm_lite::{rocmrc::HipContext, runtime::RocmRuntime};
+use luminal_rocm_lite::rocmrc::HipContext;
 
-use crate::transformer::IN_CHANNELS;
-use crate::{DecodeStage, DitStage, EncodeStage, TextStage};
+/// One stage execute's measurement: (GPU time µs, kernel launches, FLOPs).
+pub type Sample = (f64, usize, u64);
 
-pub struct StageDims {
-    pub s_txt: usize,
-    pub s_img: usize,
-    pub width: usize,
-    pub height: usize,
-}
-
-fn measure(
-    rt: &mut RocmRuntime,
-    cx: &Graph,
+/// Run `warmup` throwaway executes then average `repeats` timed executes of a
+/// stage closure. The closure runs one real stage execute and returns
+/// `(output, sample)`; we average the sample's time and take the (constant)
+/// launches/flops. The output is ignored here — it's returned so the same
+/// closure can also drive the real pipeline.
+pub fn measure(
     warmup: usize,
     repeats: usize,
-    mut reseed: impl FnMut(&mut RocmRuntime),
-) -> (f64, usize, u64) {
+    mut run: impl FnMut() -> (Vec<f32>, Sample),
+) -> Sample {
     for _ in 0..warmup {
-        reseed(rt);
-        rt.execute(&cx.dyn_map);
+        run();
     }
-    let mut total_us = 0.0;
-    for _ in 0..repeats.max(1) {
-        reseed(rt);
-        rt.execute(&cx.dyn_map);
-        total_us += rt.last_total_time_us;
+    let n = repeats.max(1);
+    let (mut total_us, mut launches, mut flops) = (0.0_f64, 0usize, 0u64);
+    for _ in 0..n {
+        let (_out, (t, l, f)) = run();
+        total_us += t;
+        launches = l;
+        flops = f;
     }
-    (
-        total_us / repeats.max(1) as f64,
-        rt.last_kernel_launches,
-        rt.last_flops,
-    )
+    (total_us / n as f64, launches, flops)
 }
 
+/// Format the collected per-stage samples into the GPU performance report. Pure
+/// calculation + printing — all measurement happens in the caller.
+///
+/// `rows` is `(component name, per-pass sample, passes/image, cold-start wall
+/// ms)`; `dit_by_type` is the DiT's `(op type, exec ops, flops)` breakdown for
+/// one pass.
 pub fn report_metrics(
     ctx: &Arc<HipContext>,
-    text_stage: &mut TextStage,
-    encode_stage: &mut EncodeStage,
-    dit_stage: &mut DitStage,
-    decode_stage: &mut DecodeStage,
-    steps: usize,
-    dims: StageDims,
-    cold_ms: [f64; 4],
     warmup: usize,
-    repeats: usize
+    repeats: usize,
+    rows: &[(&'static str, Sample, usize, f64)],
+    dit_by_type: Vec<(&'static str, usize, u64)>,
 ) {
-    println!(
-        "\n=== GPU performance (warm: {warmup} warmup + {repeats} timed executes) ===\n"
-    );
-
-    let StageDims {
-        s_txt,
-        s_img,
-        width,
-        height,
-    } = dims;
-
-    let (t_ids, t_pos, t_mask) = (text_stage.ids, text_stage.pos, text_stage.mask);
-    let text = measure(&mut text_stage.rt, &text_stage.cx, warmup, repeats, |rt| {
-        rt.set_data(t_ids, vec![0i32; s_txt]);
-        rt.set_data(t_pos, vec![0i32; s_txt]);
-        rt.set_data(t_mask, vec![0.0f32; s_txt]);
-    });
-    let e_image = encode_stage.image;
-    let enc = measure(&mut encode_stage.rt, &encode_stage.cx, warmup, repeats, |rt| {
-        rt.set_data(e_image, vec![0.0f32; 3 * width * height]);
-    });
-    let (d_latent, d_ts) = (dit_stage.latent, dit_stage.timestep);
-    let dit = measure(&mut dit_stage.rt, &dit_stage.cx, warmup, repeats, |rt| {
-        rt.set_data(d_latent, vec![0.0f32; 2 * s_img * IN_CHANNELS]);
-        rt.set_data(d_ts, vec![0.0f32]);
-    });
-    let d_packed = decode_stage.packed;
-    let dec = measure(&mut decode_stage.rt, &decode_stage.cx, warmup, repeats, |rt| {
-        rt.set_data(d_packed, vec![0.0f32; s_img * IN_CHANNELS]);
-    });
-
-    let dit_passes = 2 * steps;
-    let rows: [(&str, (f64, usize, u64), usize, f64); 4] = [
-        ("text-encode", text, 2, cold_ms[0]),
-        ("vae-encode", enc, 1, cold_ms[1]),
-        ("DiT", dit, dit_passes, cold_ms[2]),
-        ("vae-decode", dec, 1, cold_ms[3]),
-    ];
-
+    println!("\n=== GPU performance (warm: {warmup} warmup + {repeats} timed executes) ===\n");
     println!(
         "{:<13} {:>7} {:>12} {:>12} {:>12} {:>12}",
         "component", "passes", "ms/pass", "total ms", "launches", "GFLOP"
     );
     println!("{}", "-".repeat(72));
     let (mut tot_ms, mut tot_launch, mut tot_flops) = (0.0_f64, 0usize, 0u64);
-    for (name, (us, launch, flops), passes, _cold) in rows {
+    for &(name, (us, launch, flops), passes, _cold) in rows {
         let ms_pass = us / 1e3;
         let total_ms = ms_pass * passes as f64;
         let launch_total = launch * passes;
@@ -152,24 +107,16 @@ pub fn report_metrics(
         },
     }
 
-    println!(
-        "\nfirst-run wall incl. graph instantiation (one-time, excl. compile):\n  \
-         text {:.1} ms | encode {:.1} ms | DiT {:.1} ms | decode {:.1} ms",
-        cold_ms[0], cold_ms[1], cold_ms[2], cold_ms[3]
-    );
+    print!("\nfirst-run wall incl. graph instantiation (one-time, excl. compile):\n ");
+    for (i, &(name, _, _, cold)) in rows.iter().enumerate() {
+        print!("{}{name} {cold:.1} ms", if i == 0 { " " } else { " | " });
+    }
+    println!();
 
     println!("\n--- DiT compute by op type (one pass) ---");
-    let stats = &dit_stage.rt.last_kernel_stats;
-    let stage_flops: u64 = stats.iter().map(|s| s.flops as u64).sum();
-    let mut by_type: std::collections::BTreeMap<&str, (usize, u64)> =
-        std::collections::BTreeMap::new();
-    for s in stats {
-        let e = by_type.entry(s.name).or_insert((0, 0));
-        e.0 += 1;
-        e.1 += s.flops as u64;
-    }
+    let stage_flops: u64 = dit_by_type.iter().map(|(_, _, f)| f).sum();
     println!("{:<12} {:>10} {:>14} {:>9}", "op type", "exec ops", "GFLOP", "% flops");
-    for (name, (count, flops)) in &by_type {
+    for (name, count, flops) in &dit_by_type {
         println!(
             "{:<12} {:>10} {:>14.2} {:>8.1}%",
             name,

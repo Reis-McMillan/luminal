@@ -320,9 +320,6 @@ struct Args {
     #[arg(short = 'r', long, default_value_t = 0)]
     random_seed: usize,
 
-    #[arg(short = 'g', long, default_value_t = 4.0)]
-    guidance_scale: f32,
-
     #[arg(short = 'w', long, default_value_t = 2)]
     warmup: usize,
 
@@ -338,7 +335,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         search_iters,
         text_length,
         random_seed,
-        guidance_scale,
         warmup,
         repeat
     } = Args::parse();
@@ -409,8 +405,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (cond_ids, cond_len) = tokenize_prompt(&tokenizer, &prompt, s_txt)?;
     let cond_mask: Vec<f32> = (0..s_txt).map(|i| if i < cond_len { 1.0 } else { 0.0 }).collect();
-    let (neg_ids, neg_len) = tokenize_prompt(&tokenizer, "", s_txt)?;
-    let neg_mask: Vec<f32> = (0..s_txt).map(|i| if i < neg_len { 1.0 } else { 0.0 }).collect();
     let pos_ids: Vec<i32> = (0..s_txt as i32).collect();
 
     let steps = 4;
@@ -442,11 +436,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         (out, (rt.last_total_time_us, rt.last_kernel_launches, rt.last_flops))
     };
 
-    // 1. Text-encode: conditional prompt + empty negative (for CFG).
+    // 1. Text-encode the prompt. Klein-9B is step-distilled (`is_distilled=true`)
+    //    and guidance-free: a single conditional pass per step, no negative
+    //    prompt, no classifier-free guidance.
     let t_cold = Instant::now();
     let (text_features, _) = run_text(&cond_ids, &cond_mask);
     let cold_text_ms = t_cold.elapsed().as_secs_f64() * 1e3;
-    let (neg_text_features, _) = run_text(&neg_ids, &neg_mask);
 
     // 2. VAE-encode the input image → reference tokens (edit mode only). In
     //    text-to-image `reference` is empty, so the DiT sees just the generated
@@ -487,19 +482,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         (out, (rt.last_total_time_us, rt.last_kernel_launches, rt.last_flops))
     };
 
+    // Diffusion loop: one conditional DiT pass per step, host Euler update.
     let mut cold_dit_ms = 0.0_f64;
     for i in 0..steps {
         let t_cold = Instant::now();
-        let (v_cond, _) = run_dit(&text_features, &latent, timesteps[i]);
+        let (velocity, _) = run_dit(&text_features, &latent, timesteps[i]);
         if i == 0 {
             cold_dit_ms = t_cold.elapsed().as_secs_f64() * 1e3;
         }
-        let (v_uncond, _) = run_dit(&neg_text_features, &latent, timesteps[i]);
-        let velocity: Vec<f32> = v_uncond
-            .iter()
-            .zip(&v_cond)
-            .map(|(u, c)| u + guidance_scale * (c - u))
-            .collect();
         euler_step(&mut latent, &velocity, sigmas[i], sigmas[i + 1]);
         println!(
             "  step {}/{steps}  sigma {:.4} -> {:.4}",
@@ -546,7 +536,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(s_enc) = s_enc {
         rows.push(("vae-encode", s_enc, 1, cold_enc_ms));
     }
-    rows.push(("DiT", s_dit, 2 * steps, cold_dit_ms));
+    rows.push(("DiT", s_dit, steps, cold_dit_ms));
     rows.push(("vae-decode", s_dec, 1, cold_dec_ms));
 
     report_metrics(&ctx, warmup, repeat, &rows, dit_by_type);
